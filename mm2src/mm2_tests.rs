@@ -1530,12 +1530,7 @@ fn test_withdraw_and_send() {
 #[test]
 #[cfg(not(target_arch = "wasm32"))]
 fn test_withdraw_and_send_segwit_to_segwit() {
-    let (alice_file_passphrase, _alice_file_userpass) = from_env_file(slurp(&".env.client").unwrap());
-
-    let alice_passphrase = var("ALICE_PASSPHRASE")
-        .ok()
-        .or(alice_file_passphrase)
-        .expect("No ALICE_PASSPHRASE or .env.client/PASSPHRASE");
+    let seed = "spice describe gravity federal blast come thank unfair canal monkey style afraid";
 
     let coins = json! ([
         {
@@ -1564,7 +1559,7 @@ fn test_withdraw_and_send_segwit_to_segwit() {
             "netid": 8100,
             "myipaddr": env::var ("ALICE_TRADE_IP") .ok(),
             "rpcip": env::var ("ALICE_TRADE_IP") .ok(),
-            "passphrase": alice_passphrase,
+            "passphrase": seed.to_string(),
             "coins": coins,
             "rpc_password": "password",
             "i_am_seed": true,
@@ -1623,12 +1618,7 @@ fn test_withdraw_and_send_segwit_to_segwit() {
 #[test]
 #[cfg(not(target_arch = "wasm32"))]
 fn test_withdraw_and_send_segwit_to_legacy() {
-    let (alice_file_passphrase, _alice_file_userpass) = from_env_file(slurp(&".env.client").unwrap());
-
-    let alice_passphrase = var("ALICE_PASSPHRASE")
-        .ok()
-        .or(alice_file_passphrase)
-        .expect("No ALICE_PASSPHRASE or .env.client/PASSPHRASE");
+    let seed = "spice describe gravity federal blast come thank unfair canal monkey style afraid";
 
     let coins = json! ([
         {
@@ -1657,7 +1647,7 @@ fn test_withdraw_and_send_segwit_to_legacy() {
             "netid": 8100,
             "myipaddr": env::var ("ALICE_TRADE_IP") .ok(),
             "rpcip": env::var ("ALICE_TRADE_IP") .ok(),
-            "passphrase": alice_passphrase,
+            "passphrase": seed.to_string(),
             "coins": coins,
             "rpc_password": "password",
             "i_am_seed": true,
@@ -1716,12 +1706,7 @@ fn test_withdraw_and_send_segwit_to_legacy() {
 #[test]
 #[cfg(not(target_arch = "wasm32"))]
 fn test_withdraw_and_send_legacy_to_segwit() {
-    let (alice_file_passphrase, _alice_file_userpass) = from_env_file(slurp(&".env.client").unwrap());
-
-    let alice_passphrase = var("ALICE_PASSPHRASE")
-        .ok()
-        .or(alice_file_passphrase)
-        .expect("No ALICE_PASSPHRASE or .env.client/PASSPHRASE");
+    let seed = "spice describe gravity federal blast come thank unfair canal monkey style afraid";
 
     let coins = json! ([
         {
@@ -1750,7 +1735,7 @@ fn test_withdraw_and_send_legacy_to_segwit() {
             "netid": 8100,
             "myipaddr": env::var ("ALICE_TRADE_IP") .ok(),
             "rpcip": env::var ("ALICE_TRADE_IP") .ok(),
-            "passphrase": alice_passphrase,
+            "passphrase": seed.to_string(),
             "coins": coins,
             "rpc_password": "password",
             "i_am_seed": true,
@@ -1896,12 +1881,7 @@ fn test_withdraw_legacy() {
 #[test]
 #[cfg(not(target_arch = "wasm32"))]
 fn test_withdraw_segwit() {
-    let (alice_file_passphrase, _alice_file_userpass) = from_env_file(slurp(&".env.client").unwrap());
-
-    let alice_passphrase = var("ALICE_PASSPHRASE")
-        .ok()
-        .or(alice_file_passphrase)
-        .expect("No ALICE_PASSPHRASE or .env.client/PASSPHRASE");
+    let seed = "spice describe gravity federal blast come thank unfair canal monkey style afraid";
 
     let coins = json!([
         {
@@ -1930,7 +1910,7 @@ fn test_withdraw_segwit() {
             "netid": 8100,
             "myipaddr": env::var ("ALICE_TRADE_IP") .ok(),
             "rpcip": env::var ("ALICE_TRADE_IP") .ok(),
-            "passphrase": alice_passphrase,
+            "passphrase": seed.to_string(),
             "coins": coins,
             "rpc_password": "password",
             "i_am_seed": true,
