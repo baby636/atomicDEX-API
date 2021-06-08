@@ -80,6 +80,7 @@ pub trait QtumBasedCoin: AsRef<UtxoCoinFields> + UtxoCommonOps + MarketCoinOps {
             t_addr_prefix: utxo.conf.pub_t_addr_prefix,
             hash: address.0.into(),
             checksum_type: utxo.conf.checksum_type,
+            hrp: utxo.conf.bech32_hrp.clone(),
         }
     }
 
@@ -92,6 +93,7 @@ pub trait QtumBasedCoin: AsRef<UtxoCoinFields> + UtxoCommonOps + MarketCoinOps {
             t_addr_prefix: utxo.conf.pub_t_addr_prefix,
             hash: address.0.into(),
             checksum_type: utxo.conf.checksum_type,
+            hrp: utxo.conf.bech32_hrp.clone(),
         }
     }
 
@@ -101,7 +103,8 @@ pub trait QtumBasedCoin: AsRef<UtxoCoinFields> + UtxoCommonOps + MarketCoinOps {
             pubkey,
             utxo.conf.pub_addr_prefix,
             utxo.conf.pub_t_addr_prefix,
-            utxo.conf.checksum_type
+            utxo.conf.checksum_type,
+            utxo.conf.bech32_hrp.clone()
         ));
         Ok(qtum::contract_addr_from_utxo_addr(qtum_address))
     }

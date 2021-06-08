@@ -22,14 +22,14 @@ mod signature;
 pub use primitives::{bytes, hash};
 
 pub use address::{Address, Type};
-pub use cashaddress::{AddressType as CashAddrType, CashAddress};
+pub use cashaddress::{is_cashaddress, AddressType as CashAddrType, CashAddress};
 pub use display::DisplayLayout;
 pub use error::Error;
 pub use keypair::KeyPair;
 pub use network::Network;
 pub use private::Private;
 pub use public::Public;
-pub use segwitaddress::SegwitAddress;
+pub use segwitaddress::{is_segwit_address, SegwitAddress};
 pub use signature::{CompactSignature, Signature};
 
 use hash::{H160, H256};

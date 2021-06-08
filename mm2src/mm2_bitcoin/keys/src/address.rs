@@ -10,7 +10,7 @@ use crypto::{checksum, dgroestl512, dhash256, keccak256, ChecksumType};
 use std::fmt;
 use std::ops::Deref;
 use std::str::FromStr;
-use {AddressHash, CashAddrType, CashAddress, DisplayLayout, Error};
+use {AddressHash, CashAddrType, CashAddress, DisplayLayout, Error, SegwitAddress};
 
 /// There are two address formats currently in use.
 /// https://bitcoin.org/en/developer-reference#address-conversion
@@ -33,6 +33,8 @@ pub struct Address {
     pub prefix: u8,
     /// T addr prefix, additional prefix used by Zcash and some forks
     pub t_addr_prefix: u8,
+    /// Segwit addr human readable part
+    pub hrp: Option<String>,
     /// Public key hash.
     pub hash: AddressHash,
     /// Checksum type
@@ -96,6 +98,7 @@ impl DisplayLayout for Address {
                     prefix: data[0],
                     hash,
                     checksum_type: sum_type,
+                    hrp: None,
                 };
 
                 Ok(address)
@@ -111,6 +114,7 @@ impl DisplayLayout for Address {
                     prefix: data[1],
                     hash,
                     checksum_type: sum_type,
+                    hrp: None,
                 };
 
                 Ok(address)
@@ -169,6 +173,7 @@ impl Address {
             t_addr_prefix,
             hash,
             checksum_type,
+            hrp: None,
         })
     }
 
@@ -190,6 +195,41 @@ impl Address {
         };
 
         CashAddress::new(network_prefix, self.hash.clone().take().to_vec(), address_type)
+    }
+
+    pub fn from_segwitaddress(segaddr: &str) -> Result<Address, String> {
+        let address = SegwitAddress::from_str(segaddr).map_err(|e| e.to_string())?;
+
+        if address.program.len() != 20 {
+            return Err("Expect 20 bytes long hash".into());
+        }
+
+        let mut hash: AddressHash = Default::default();
+        hash.copy_from_slice(address.program.as_slice());
+
+        let prefix = 0;
+
+        let checksum_type = ChecksumType::BCH;
+
+        // Simple UTXO hash specific
+        let t_addr_prefix = 0;
+
+        let hrp = Some(address.hrp);
+
+        Ok(Address {
+            prefix,
+            t_addr_prefix,
+            hash,
+            checksum_type,
+            hrp,
+        })
+    }
+
+    pub fn to_segwitaddress(&self) -> Result<SegwitAddress, String> {
+        match &self.hrp {
+            Some(hrp) => Ok(SegwitAddress::new(&self.hash, hrp.to_string())),
+            None => Err("hrp must be provided for segwit address".into()),
+        }
     }
 }
 

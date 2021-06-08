@@ -1084,6 +1084,7 @@ pub trait UtxoCoinBuilder {
             t_addr_prefix: conf.pub_t_addr_prefix,
             hash: key_pair.public().address_hash(),
             checksum_type: conf.checksum_type,
+            hrp: conf.bech32_hrp.clone(),
         };
         let my_script_pubkey = Builder::build_p2pkh(&my_address.hash).to_bytes();
         let rpc_client = try_s!(self.rpc_client().await);
@@ -1537,7 +1538,12 @@ where
 
     let utxo = coin.as_ref();
     let rpc_client = &utxo.rpc_client;
-    let mut unspents = try_s!(rpc_client.list_unspent(&utxo.my_address, utxo.decimals).compat().await);
+    let mut unspents = try_s!(
+        rpc_client
+            .list_unspent(&utxo.my_address, utxo.decimals, false)
+            .compat()
+            .await
+    );
     // list_unspent_ordered() returns ordered from lowest to highest by value unspent outputs.
     // reverse it to reorder from highest to lowest outputs.
     unspents.reverse();
@@ -1605,16 +1611,33 @@ pub(crate) fn sign_tx(
     fork_id: u32,
 ) -> Result<UtxoTx, String> {
     let mut signed_inputs = vec![];
-    for (i, _) in unsigned.inputs.iter().enumerate() {
-        signed_inputs.push(try_s!(p2pkh_spend(
-            &unsigned,
-            i,
-            key_pair,
-            &prev_script,
-            signature_version,
-            fork_id
-        )));
+    match signature_version {
+        SignatureVersion::WitnessV0 => {
+            for (i, _) in unsigned.inputs.iter().enumerate() {
+                signed_inputs.push(try_s!(p2wpkh_spend(
+                    &unsigned,
+                    i,
+                    key_pair,
+                    &prev_script,
+                    signature_version,
+                    fork_id
+                )));
+            }
+        },
+        _ => {
+            for (i, _) in unsigned.inputs.iter().enumerate() {
+                signed_inputs.push(try_s!(p2pkh_spend(
+                    &unsigned,
+                    i,
+                    key_pair,
+                    &prev_script,
+                    signature_version,
+                    fork_id
+                )));
+            }
+        },
     }
+
     Ok(UtxoTx {
         inputs: signed_inputs,
         n_time: unsigned.n_time,
@@ -1730,6 +1753,43 @@ fn p2pkh_spend(
     })
 }
 
+/// Creates signed input spending p2wpkh output
+fn p2wpkh_spend(
+    signer: &TransactionInputSigner,
+    input_index: usize,
+    key_pair: &KeyPair,
+    prev_script: &Script,
+    signature_version: SignatureVersion,
+    fork_id: u32,
+) -> Result<TransactionInput, String> {
+    let script = Builder::build_p2pkh(&key_pair.public().address_hash());
+
+    if script != *prev_script {
+        return ERR!(
+            "p2pkh script {} built from input key pair doesn't match expected prev script {}",
+            script,
+            prev_script
+        );
+    }
+    let sighash_type = 1 | fork_id;
+    let sighash = signer.signature_hash(
+        input_index,
+        signer.inputs[input_index].amount,
+        &script,
+        signature_version,
+        sighash_type,
+    );
+
+    let sig_script = try_s!(script_sig(&sighash, key_pair, fork_id));
+
+    Ok(TransactionInput {
+        previous_output: signer.inputs[input_index].previous_output.clone(),
+        script_sig: Bytes::from(Vec::new()),
+        sequence: signer.inputs[input_index].sequence,
+        script_witness: vec![sig_script, Bytes::from(key_pair.public().deref())],
+    })
+}
+
 fn script_sig_with_pub(message: &H256, key_pair: &KeyPair, fork_id: u32) -> Result<Bytes, String> {
     let sig_script = try_s!(script_sig(message, key_pair, fork_id));
 
@@ -1764,6 +1824,7 @@ pub fn address_by_conf_and_pubkey_str(coin: &str, conf: &Json, pubkey: &str) -> 
         t_addr_prefix: utxo_conf.pub_t_addr_prefix,
         hash,
         checksum_type: utxo_conf.checksum_type,
+        hrp: utxo_conf.bech32_hrp.clone(),
     };
     display_address(&utxo_conf, &address)
 }

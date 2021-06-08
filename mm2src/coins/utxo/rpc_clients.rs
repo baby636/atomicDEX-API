@@ -211,7 +211,7 @@ impl From<NumConversError> for UtxoRpcError {
 
 /// Common operations that both types of UTXO clients have but implement them differently
 pub trait UtxoRpcClientOps: fmt::Debug + Send + Sync + 'static {
-    fn list_unspent(&self, address: &Address, decimals: u8) -> UtxoRpcFut<Vec<UnspentInfo>>;
+    fn list_unspent(&self, address: &Address, decimals: u8, is_segwit_address: bool) -> UtxoRpcFut<Vec<UnspentInfo>>;
 
     fn send_transaction(&self, tx: &UtxoTx) -> Box<dyn Future<Item = H256Json, Error = String> + Send + 'static>;
 
@@ -541,9 +541,14 @@ impl JsonRpcClient for NativeClientImpl {
 
 #[cfg_attr(test, mockable)]
 impl UtxoRpcClientOps for NativeClient {
-    fn list_unspent(&self, address: &Address, decimals: u8) -> UtxoRpcFut<Vec<UnspentInfo>> {
+    fn list_unspent(&self, address: &Address, decimals: u8, is_segwit_address: bool) -> UtxoRpcFut<Vec<UnspentInfo>> {
+        let addresses = if is_segwit_address {
+            vec![address.to_segwitaddress().unwrap().to_string()]
+        } else {
+            vec![address.to_string()]
+        };
         let fut = self
-            .list_unspent_impl(0, std::i32::MAX, vec![address.to_string()])
+            .list_unspent_impl(0, std::i32::MAX, addresses)
             .map_to_mm_fut(UtxoRpcError::from)
             .and_then(move |unspents| {
                 let unspents: UtxoRpcResult<Vec<_>> = unspents
@@ -1453,8 +1458,12 @@ impl ElectrumClient {
 
 #[cfg_attr(test, mockable)]
 impl UtxoRpcClientOps for ElectrumClient {
-    fn list_unspent(&self, address: &Address, _decimals: u8) -> UtxoRpcFut<Vec<UnspentInfo>> {
-        let script = Builder::build_p2pkh(&address.hash);
+    fn list_unspent(&self, address: &Address, _decimals: u8, is_segwit_address: bool) -> UtxoRpcFut<Vec<UnspentInfo>> {
+        let script = if is_segwit_address {
+            Builder::build_p2wpkh(&address.hash)
+        } else {
+            Builder::build_p2pkh(&address.hash)
+        };
         let script_hash = electrum_script_hash(&script);
         Box::new(
             self.scripthash_list_unspent(&hex::encode(script_hash))
