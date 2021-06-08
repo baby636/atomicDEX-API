@@ -244,6 +244,7 @@ mod tests {
             t_addr_prefix: 0,
             hash: "3f4aa1fedf1f54eeb03b759deadb36676b184911".into(),
             checksum_type: ChecksumType::DSHA256,
+            hrp: None,
         };
 
         assert_eq!("16meyfSoQV6twkAAxPe51RtMVz7PGRmWna".to_owned(), address.to_string());
@@ -256,6 +257,7 @@ mod tests {
             t_addr_prefix: 0,
             hash: "05aab5342166f8594baf17a7d9bef5d567443327".into(),
             checksum_type: ChecksumType::DSHA256,
+            hrp: None,
         };
 
         assert_eq!("R9o9xTocqr6CeEDGDH6mEYpwLoMz6jNjMW".to_owned(), address.to_string());
@@ -268,6 +270,7 @@ mod tests {
             prefix: 37,
             hash: "05aab5342166f8594baf17a7d9bef5d567443327".into(),
             checksum_type: ChecksumType::DSHA256,
+            hrp: None,
         };
 
         assert_eq!("tmAEKD7psc1ajK76QMGEW8WGQSBBHf9SqCp".to_owned(), address.to_string());
@@ -280,6 +283,7 @@ mod tests {
             t_addr_prefix: 0,
             hash: "ca0c3786c96ff7dacd40fdb0f7c196528df35f85".into(),
             checksum_type: ChecksumType::DSHA256,
+            hrp: None,
         };
 
         assert_eq!("bX9bppqdGvmCCAujd76Tq76zs1suuPnB9A".to_owned(), address.to_string());
@@ -292,6 +296,7 @@ mod tests {
             t_addr_prefix: 0,
             hash: "3f4aa1fedf1f54eeb03b759deadb36676b184911".into(),
             checksum_type: ChecksumType::DSHA256,
+            hrp: None,
         };
 
         assert_eq!(address, "16meyfSoQV6twkAAxPe51RtMVz7PGRmWna".into());
@@ -305,6 +310,7 @@ mod tests {
             t_addr_prefix: 0,
             hash: "05aab5342166f8594baf17a7d9bef5d567443327".into(),
             checksum_type: ChecksumType::DSHA256,
+            hrp: None,
         };
 
         assert_eq!(address, "R9o9xTocqr6CeEDGDH6mEYpwLoMz6jNjMW".into());
@@ -318,6 +324,7 @@ mod tests {
             prefix: 37,
             hash: "05aab5342166f8594baf17a7d9bef5d567443327".into(),
             checksum_type: ChecksumType::DSHA256,
+            hrp: None,
         };
 
         assert_eq!(address, "tmAEKD7psc1ajK76QMGEW8WGQSBBHf9SqCp".into());
@@ -331,6 +338,7 @@ mod tests {
             t_addr_prefix: 0,
             hash: "ca0c3786c96ff7dacd40fdb0f7c196528df35f85".into(),
             checksum_type: ChecksumType::DSHA256,
+            hrp: None,
         };
 
         assert_eq!(address, "bX9bppqdGvmCCAujd76Tq76zs1suuPnB9A".into());
@@ -344,6 +352,7 @@ mod tests {
             t_addr_prefix: 0,
             hash: "c3f710deb7320b0efa6edb14e3ebeeb9155fa90d".into(),
             checksum_type: ChecksumType::DGROESTL512,
+            hrp: None,
         };
 
         assert_eq!(address, "Fo2tBkpzaWQgtjFUkemsYnKyfvd2i8yTki".into());
@@ -357,6 +366,7 @@ mod tests {
             t_addr_prefix: 0,
             hash: "56bb05aa20f5a80cf84e90e5dab05be331333e27".into(),
             checksum_type: ChecksumType::KECCAK256,
+            hrp: None,
         };
 
         assert_eq!(address, "SVCbBs6FvPYxJrYoJc4TdCe47QNCgmTabv".into());
@@ -413,6 +423,7 @@ mod tests {
             ]
             .into(),
             checksum_type: ChecksumType::DSHA256,
+            hrp: None,
         };
 
         assert_eq!(

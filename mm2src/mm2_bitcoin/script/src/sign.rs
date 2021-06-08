@@ -625,6 +625,7 @@ mod tests {
                 hash: previous_tx_hash,
             },
             amount: 0,
+            witness: vec![Vec::new()],
         };
 
         let output = TransactionOutput {
