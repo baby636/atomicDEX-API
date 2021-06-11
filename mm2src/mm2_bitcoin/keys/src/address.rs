@@ -197,7 +197,7 @@ impl Address {
         CashAddress::new(network_prefix, self.hash.clone().take().to_vec(), address_type)
     }
 
-    pub fn from_segwitaddress(segaddr: &str) -> Result<Address, String> {
+    pub fn from_segwitaddress(segaddr: &str, checksum_type: ChecksumType) -> Result<Address, String> {
         let address = SegwitAddress::from_str(segaddr).map_err(|e| e.to_string())?;
 
         if address.program.len() != 20 {
@@ -208,8 +208,6 @@ impl Address {
         hash.copy_from_slice(address.program.as_slice());
 
         let prefix = 0;
-
-        let checksum_type = ChecksumType::BCH;
 
         // Simple UTXO hash specific
         let t_addr_prefix = 0;

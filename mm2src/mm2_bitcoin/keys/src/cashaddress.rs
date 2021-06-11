@@ -199,8 +199,6 @@ impl From<&'static str> for CashAddress {
     fn from(s: &'static str) -> Self { s.parse().unwrap() }
 }
 
-pub fn is_cashaddress(s: &str) -> bool { CashAddress::decode(s).is_ok() }
-
 fn split_address(addr: &str) -> Result<(NetworkPrefix, &str), String> {
     let tokens: Vec<&str> = addr.split(':').collect();
     if tokens.len() == 1 {

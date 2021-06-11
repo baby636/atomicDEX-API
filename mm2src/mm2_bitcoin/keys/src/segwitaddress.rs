@@ -138,9 +138,6 @@ fn find_bech32_prefix(bech32: &str) -> Option<&str> {
     }
 }
 
-//Todo: move function in address implementation maybe??
-pub fn is_segwit_address(s: &str) -> bool { SegwitAddress::from_str(s).is_ok() }
-
 impl FromStr for SegwitAddress {
     type Err = Error;
 

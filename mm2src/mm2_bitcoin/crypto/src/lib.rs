@@ -24,7 +24,6 @@ pub enum ChecksumType {
     DSHA256,
     DGROESTL512,
     KECCAK256,
-    BCH,
 }
 
 impl Default for ChecksumType {
@@ -103,8 +102,6 @@ pub fn checksum(data: &[u8], sum_type: &ChecksumType) -> H32 {
         ChecksumType::DSHA256 => result.copy_from_slice(&dhash256(data)[0..4]),
         ChecksumType::DGROESTL512 => result.copy_from_slice(&dgroestl512(data)[0..4]),
         ChecksumType::KECCAK256 => result.copy_from_slice(&keccak256(data)[0..4]),
-        // TODO: segwit checksum
-        ChecksumType::BCH => (),
     }
     result
 }

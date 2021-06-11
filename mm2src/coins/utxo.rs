@@ -232,6 +232,8 @@ impl Default for UtxoAddressFormat {
 
 impl UtxoAddressFormat {
     fn is_segwit(&self) -> bool { matches!(*self, UtxoAddressFormat::Segwit) }
+
+    fn is_cashaddress(&self) -> bool { matches!(*self, UtxoAddressFormat::CashAddress { .. }) }
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]

@@ -15,7 +15,7 @@ use futures::compat::Future01CompatExt;
 use futures::future::{FutureExt, TryFutureExt};
 use futures01::future::Either;
 use keys::bytes::Bytes;
-use keys::{is_cashaddress, is_segwit_address, Address, AddressHash, CashAddress, KeyPair, Public, SegwitAddress, Type};
+use keys::{Address, AddressHash, CashAddress, KeyPair, Public, SegwitAddress, Type};
 use primitives::hash::H512;
 use rpc::v1::types::{Bytes as BytesJson, H256 as H256Json};
 use script::{Builder, Opcode, Script, ScriptAddress, SignatureVersion, TransactionInputSigner,
@@ -247,13 +247,13 @@ pub fn address_from_str_and_format(
                 conf.pub_addr_prefix,
                 conf.p2sh_addr_prefix) {
                 Ok(_) => ERR!("Legacy address format activated for {}, but cashaddress format used instead. Try to call 'convertaddress'", conf.ticker),
-                Err(_) => match Address::from_segwitaddress(&address) {
+                Err(_) => match Address::from_segwitaddress(&address, conf.checksum_type) {
                     Ok(_) => ERR!("Legacy address format activated for {}, but segwit address format used instead.", conf.ticker),
                     Err(_) => ERR!("{}", e),
                     },
                 },
             ),
-        UtxoAddressFormat::Segwit => Address::from_segwitaddress(address)
+        UtxoAddressFormat::Segwit => Address::from_segwitaddress(address, conf.checksum_type)
         .or_else(|e| match Address::from_str(&address) {
             Ok(_) => ERR!("Segwit address format activated for {}, but legacy format used instead.", conf.ticker),
             Err(_) => match Address::from_cashaddress(
@@ -273,7 +273,7 @@ pub fn address_from_str_and_format(
             conf.p2sh_addr_prefix)
             .or_else(|e| match Address::from_str(&address) {
                 Ok(_) => ERR!("Cashaddress address format activated for {}, but legacy format used instead. Try to call 'convertaddress'", conf.ticker),
-                Err(_) => match Address::from_segwitaddress(&address) {
+                Err(_) => match Address::from_segwitaddress(&address, conf.checksum_type) {
                     Ok(_) => ERR!("Cashaddress address format activated for {}, but segwit address format used instead.", conf.ticker),
                     Err(_) => ERR!("{}", e),
                     },
@@ -1373,9 +1373,7 @@ where
 {
     let conf = &coin.as_ref().conf;
 
-    let script_pubkey = if is_segwit_address(&req.to) {
-        let to = SegwitAddress::from_str(&req.to).unwrap();
-
+    let script_pubkey = if let Ok(to) = SegwitAddress::from_str(&req.to) {
         if Some(to.hrp.clone()) != conf.bech32_hrp {
             let error = format!("Address {} is not a valid bech32 address for {}", to, conf.ticker);
             MmError::err(WithdrawError::InvalidAddress(error))
@@ -1383,11 +1381,15 @@ where
             Ok(Builder::build_p2wpkh(&AddressHash::from(&to.program[..])))
         }
     } else {
-        let to = if is_cashaddress(&req.to) {
-            address_from_str_and_format(conf, &req.to, &UtxoAddressFormat::CashAddress {
-                network: CashAddress::from_str(&req.to).unwrap().prefix.to_string(),
-            })
-            .map_to_mm(WithdrawError::InvalidAddress)?
+        let to = if conf.address_format.is_cashaddress() {
+            match CashAddress::from_str(&req.to) {
+                Ok(cashaddress) => address_from_str_and_format(conf, &req.to, &UtxoAddressFormat::CashAddress {
+                    network: cashaddress.prefix.to_string(),
+                })
+                .map_to_mm(WithdrawError::InvalidAddress)?,
+                Err(_) => address_from_str_and_format(conf, &req.to, &UtxoAddressFormat::Standard)
+                    .map_to_mm(WithdrawError::InvalidAddress)?,
+            }
         } else {
             address_from_str_and_format(conf, &req.to, &UtxoAddressFormat::Standard)
                 .map_to_mm(WithdrawError::InvalidAddress)?
