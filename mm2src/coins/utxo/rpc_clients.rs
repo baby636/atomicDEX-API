@@ -31,7 +31,8 @@ use keys::Address;
 use rpc::v1::types::{Bytes as BytesJson, Transaction as RpcTransaction, H256 as H256Json};
 use script::Builder;
 use serde_json::{self as json, Value as Json};
-use serialization::{deserialize, serialize, serialize_with_flags, CoinVariant, CompactInteger, Reader, SERIALIZE_TRANSACTION_WITNESS};
+use serialization::{deserialize, serialize, serialize_with_flags, CoinVariant, CompactInteger, Reader,
+                    SERIALIZE_TRANSACTION_WITNESS};
 use sha2::{Digest, Sha256};
 use std::collections::hash_map::{Entry, HashMap};
 use std::fmt;
