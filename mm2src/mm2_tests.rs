@@ -67,15 +67,6 @@ async fn enable_coins_eth_electrum(
     );
     replies.insert("ETH", enable_native(mm, "ETH", eth_urls).await);
     replies.insert("JST", enable_native(mm, "JST", eth_urls).await);
-    replies.insert(
-        "tBTC",
-        enable_electrum(mm, "tBTC", false, &[
-            "electrum1.cipig.net:10068",
-            "electrum2.cipig.net:10068",
-            "electrum3.cipig.net:10068",
-        ])
-        .await,
-    );
     #[cfg(feature = "zhtlc")]
     replies.insert("ZOMBIE", enable_native(mm, "ZOMBIE", eth_urls).await);
     replies
@@ -1144,10 +1135,28 @@ async fn trade_base_rel_electrum(
     wait_log_re!(mm_alice, 22., ">>>>>>>>> DEX stats ");
 
     // Enable coins on Bob side. Print the replies in case we need the address.
-    let rc = enable_coins_eth_electrum(&mm_bob, &["http://195.201.0.6:8565"]).await;
+    let mut rc = enable_coins_eth_electrum(&mm_bob, &["http://195.201.0.6:8565"]).await;
+    rc.insert(
+        "tBTC",
+        enable_electrum(&mm_bob, "tBTC", false, &[
+            "electrum1.cipig.net:10068",
+            "electrum2.cipig.net:10068",
+            "electrum3.cipig.net:10068",
+        ])
+        .await,
+    );
     log! ({"enable_coins (bob): {:?}", rc});
     // Enable coins on Alice side. Print the replies in case we need the address.
-    let rc = enable_coins_eth_electrum(&mm_alice, &["http://195.201.0.6:8565"]).await;
+    let mut rc = enable_coins_eth_electrum(&mm_alice, &["http://195.201.0.6:8565"]).await;
+    rc.insert(
+        "tBTC",
+        enable_electrum(&mm_alice, "tBTC", false, &[
+            "electrum1.cipig.net:10068",
+            "electrum2.cipig.net:10068",
+            "electrum3.cipig.net:10068",
+        ])
+        .await,
+    );
     log! ({"enable_coins (alice): {:?}", rc});
 
     // unwrap! (mm_alice.wait_for_log (999., &|log| log.contains ("set pubkey for ")));
@@ -5073,7 +5082,7 @@ fn test_validateaddress() {
     assert!(!result["is_valid"].as_bool().unwrap());
     let reason = result["reason"].as_str().unwrap();
     log!((reason));
-    assert!(reason.contains("Legacy address format activated for RICK, but cashaddress format used instead"));
+    assert!(reason.contains("Legacy address format requested for RICK, but cashaddress format used instead"));
 
     // test invalid RICK address (invalid prefixes)
 
