@@ -31,8 +31,7 @@ use keys::Address;
 use rpc::v1::types::{Bytes as BytesJson, Transaction as RpcTransaction, H256 as H256Json};
 use script::Builder;
 use serde_json::{self as json, Value as Json};
-use serialization::{deserialize, serialize, serialize_with_flags, CompactInteger, Reader,
-                    SERIALIZE_TRANSACTION_WITNESS};
+use serialization::{deserialize, serialize, serialize_with_flags, CoinVariant, CompactInteger, Reader, SERIALIZE_TRANSACTION_WITNESS};
 use sha2::{Digest, Sha256};
 use std::collections::hash_map::{Entry, HashMap};
 use std::fmt;
@@ -250,7 +249,12 @@ pub trait UtxoRpcClientOps: fmt::Debug + Send + Sync + 'static {
     ) -> Box<dyn Future<Item = Option<UtxoTx>, Error = String> + Send>;
 
     /// Get median time past for `count` blocks in the past including `starting_block`
-    fn get_median_time_past(&self, starting_block: u64, count: NonZeroU64) -> UtxoRpcFut<u32>;
+    fn get_median_time_past(
+        &self,
+        starting_block: u64,
+        count: NonZeroU64,
+        coin_variant: CoinVariant,
+    ) -> UtxoRpcFut<u32>;
 }
 
 #[derive(Clone, Deserialize, Debug)]
@@ -678,7 +682,12 @@ impl UtxoRpcClientOps for NativeClient {
         Box::new(fut.boxed().compat())
     }
 
-    fn get_median_time_past(&self, starting_block: u64, count: NonZeroU64) -> UtxoRpcFut<u32> {
+    fn get_median_time_past(
+        &self,
+        starting_block: u64,
+        count: NonZeroU64,
+        _coin_variant: CoinVariant,
+    ) -> UtxoRpcFut<u32> {
         let selfi = self.clone();
         let fut = async move {
             let starting_block_hash = selfi.get_block_hash(starting_block).compat().await?;
@@ -1605,7 +1614,12 @@ impl UtxoRpcClientOps for ElectrumClient {
         Box::new(fut.boxed().compat())
     }
 
-    fn get_median_time_past(&self, starting_block: u64, count: NonZeroU64) -> UtxoRpcFut<u32> {
+    fn get_median_time_past(
+        &self,
+        starting_block: u64,
+        count: NonZeroU64,
+        coin_variant: CoinVariant,
+    ) -> UtxoRpcFut<u32> {
         let from = if starting_block <= count.get() {
             0
         } else {
@@ -1621,7 +1635,7 @@ impl UtxoRpcClientOps for ElectrumClient {
                     let len = CompactInteger::from(res.count);
                     let mut serialized = serialize(&len).take();
                     serialized.extend(res.hex.0.into_iter());
-                    let mut reader = Reader::new(serialized.as_slice());
+                    let mut reader = Reader::new_with_coin_variant(serialized.as_slice(), coin_variant);
                     let headers = reader.read_list::<BlockHeader>()?;
                     let mut timestamps: Vec<_> = headers.into_iter().map(|block| block.time).collect();
                     // can unwrap because count is non zero
