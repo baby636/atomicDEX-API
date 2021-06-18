@@ -31,7 +31,8 @@ use keys::Address;
 use rpc::v1::types::{Bytes as BytesJson, Transaction as RpcTransaction, H256 as H256Json};
 use script::Builder;
 use serde_json::{self as json, Value as Json};
-use serialization::{deserialize, serialize, CompactInteger, Reader};
+use serialization::{deserialize, serialize, serialize_with_flags, CompactInteger, Reader,
+                    SERIALIZE_TRANSACTION_WITNESS};
 use sha2::{Digest, Sha256};
 use std::collections::hash_map::{Entry, HashMap};
 use std::fmt;
@@ -213,7 +214,11 @@ impl From<NumConversError> for UtxoRpcError {
 pub trait UtxoRpcClientOps: fmt::Debug + Send + Sync + 'static {
     fn list_unspent(&self, address: &Address, decimals: u8, is_segwit_address: bool) -> UtxoRpcFut<Vec<UnspentInfo>>;
 
-    fn send_transaction(&self, tx: &UtxoTx) -> Box<dyn Future<Item = H256Json, Error = String> + Send + 'static>;
+    fn send_transaction(
+        &self,
+        tx: &UtxoTx,
+        is_segwit_address: bool,
+    ) -> Box<dyn Future<Item = H256Json, Error = String> + Send + 'static>;
 
     fn send_raw_transaction(&self, tx: BytesJson) -> UtxoRpcFut<H256Json>;
 
@@ -569,8 +574,16 @@ impl UtxoRpcClientOps for NativeClient {
         Box::new(fut)
     }
 
-    fn send_transaction(&self, tx: &UtxoTx) -> Box<dyn Future<Item = H256Json, Error = String> + Send + 'static> {
-        let tx_bytes = BytesJson::from(serialize(tx));
+    fn send_transaction(
+        &self,
+        tx: &UtxoTx,
+        is_segwit_address: bool,
+    ) -> Box<dyn Future<Item = H256Json, Error = String> + Send + 'static> {
+        let tx_bytes = if is_segwit_address {
+            BytesJson::from(serialize_with_flags(tx, SERIALIZE_TRANSACTION_WITNESS))
+        } else {
+            BytesJson::from(serialize(tx))
+        };
         Box::new(self.send_raw_transaction(tx_bytes).map_err(|e| ERRL!("{}", e)))
     }
 
@@ -1484,8 +1497,16 @@ impl UtxoRpcClientOps for ElectrumClient {
         )
     }
 
-    fn send_transaction(&self, tx: &UtxoTx) -> Box<dyn Future<Item = H256Json, Error = String> + Send + 'static> {
-        let bytes = BytesJson::from(serialize(tx));
+    fn send_transaction(
+        &self,
+        tx: &UtxoTx,
+        is_segwit_address: bool,
+    ) -> Box<dyn Future<Item = H256Json, Error = String> + Send + 'static> {
+        let bytes = if is_segwit_address {
+            BytesJson::from(serialize_with_flags(tx, SERIALIZE_TRANSACTION_WITNESS))
+        } else {
+            BytesJson::from(serialize(tx))
+        };
         Box::new(self.blockchain_transaction_broadcast(bytes).map_err(|e| ERRL!("{}", e)))
     }
 

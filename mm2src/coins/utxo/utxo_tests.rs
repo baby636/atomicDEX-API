@@ -83,7 +83,8 @@ fn utxo_coin_fields_for_test(rpc_client: UtxoRpcClientEnum, force_seed: Option<&
             overwintered: true,
             segwit: false,
             tx_version: 4,
-            address_format: UtxoAddressFormat::Standard,
+            default_address_format: UtxoAddressFormat::Standard,
+            active_address_format: UtxoAddressFormat::Standard,
             asset_chain: true,
             p2sh_addr_prefix: 85,
             p2sh_t_addr_prefix: 0,
@@ -1172,7 +1173,7 @@ fn test_address_from_str_with_cashaddress_activated() {
         .address_from_str("1DmFp16U73RrVZtYUbo2Ectt8mAnYScpqM")
         .err()
         .unwrap();
-    assert!(error.contains("Cashaddress address format activated for BCH, but legacy format used instead"));
+    assert!(error.contains("Cashaddress address format requested for BCH, but legacy format used instead"));
 
     // other error on parse
     let error = coin
@@ -1218,7 +1219,7 @@ fn test_address_from_str_with_legacy_address_activated() {
         .address_from_str("bitcoincash:qzxqqt9lh4feptf0mplnk58gnajfepzwcq9f2rxk55")
         .err()
         .unwrap();
-    assert!(error.contains("Legacy address format activated for BCH, but cashaddress format used instead"));
+    assert!(error.contains("Legacy address format requested for BCH, but cashaddress format used instead"));
 
     // other error on parse
     let error = coin

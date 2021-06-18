@@ -214,7 +214,7 @@ where
 }
 
 pub fn display_address(conf: &UtxoCoinConf, address: &Address) -> Result<String, String> {
-    match &conf.address_format {
+    match &conf.active_address_format {
         UtxoAddressFormat::Standard => Ok(address.to_string()),
         UtxoAddressFormat::Segwit => {
             let bech32_hrp = &conf.bech32_hrp;
@@ -231,7 +231,7 @@ pub fn display_address(conf: &UtxoCoinConf, address: &Address) -> Result<String,
 }
 
 pub fn address_from_str(conf: &UtxoCoinConf, address: &str) -> Result<Address, String> {
-    address_from_str_and_format(conf, address, &conf.address_format)
+    address_from_str_and_format(conf, address, &conf.active_address_format)
 }
 
 pub fn address_from_str_and_format(
@@ -246,22 +246,22 @@ pub fn address_from_str_and_format(
                 conf.checksum_type,
                 conf.pub_addr_prefix,
                 conf.p2sh_addr_prefix) {
-                Ok(_) => ERR!("Legacy address format activated for {}, but cashaddress format used instead. Try to call 'convertaddress'", conf.ticker),
+                Ok(_) => ERR!("Legacy address format requested for {}, but cashaddress format used instead. Try to call 'convertaddress'", conf.ticker),
                 Err(_) => match Address::from_segwitaddress(&address, conf.checksum_type) {
-                    Ok(_) => ERR!("Legacy address format activated for {}, but segwit address format used instead.", conf.ticker),
+                    Ok(_) => ERR!("Legacy address format requested for {}, but segwit address format used instead. Try to call 'convertaddress'", conf.ticker),
                     Err(_) => ERR!("{}", e),
                     },
                 },
             ),
         UtxoAddressFormat::Segwit => Address::from_segwitaddress(address, conf.checksum_type)
         .or_else(|e| match Address::from_str(&address) {
-            Ok(_) => ERR!("Segwit address format activated for {}, but legacy format used instead.", conf.ticker),
+            Ok(_) => ERR!("Segwit address format requested for {}, but legacy format used instead. Try to call 'convertaddress", conf.ticker),
             Err(_) => match Address::from_cashaddress(
                 &address,
                 conf.checksum_type,
                 conf.pub_addr_prefix,
                 conf.p2sh_addr_prefix) {
-                    Ok(_) => ERR!("Segwit address format activated for {}, but cashaddress format used instead.", conf.ticker),
+                    Ok(_) => ERR!("Segwit address format requested for {}, but cashaddress format used instead.", conf.ticker),
                     Err(_) => ERR!("{}", e),
                 },
             },
@@ -272,9 +272,9 @@ pub fn address_from_str_and_format(
             conf.pub_addr_prefix,
             conf.p2sh_addr_prefix)
             .or_else(|e| match Address::from_str(&address) {
-                Ok(_) => ERR!("Cashaddress address format activated for {}, but legacy format used instead. Try to call 'convertaddress'", conf.ticker),
+                Ok(_) => ERR!("Cashaddress address format requested for {}, but legacy format used instead. Try to call 'convertaddress'", conf.ticker),
                 Err(_) => match Address::from_segwitaddress(&address, conf.checksum_type) {
-                    Ok(_) => ERR!("Cashaddress address format activated for {}, but segwit address format used instead.", conf.ticker),
+                    Ok(_) => ERR!("Cashaddress address format requested for {}, but segwit address format used instead.", conf.ticker),
                     Err(_) => ERR!("{}", e),
                     },
                 },
@@ -321,7 +321,7 @@ where
     let dust: u64 = coin.as_ref().dust_amount;
     let lock_time = (now_ms() / 1000) as u32;
 
-    let change_script_pubkey = match coin.as_ref().conf.address_format {
+    let change_script_pubkey = match coin.as_ref().conf.active_address_format {
         UtxoAddressFormat::Segwit => Builder::build_p2wpkh(&coin.as_ref().my_address.hash).to_bytes(),
         _ => Builder::build_p2pkh(&coin.as_ref().my_address.hash).to_bytes(),
     };
@@ -767,9 +767,15 @@ where
     );
     let fut = async move {
         let fee = try_s!(coin.get_htlc_spend_fee().await);
+        let script_pubkey = match &coin.as_ref().conf.active_address_format {
+            UtxoAddressFormat::Segwit => {
+                Builder::build_p2wpkh(&coin.as_ref().key_pair.public().address_hash()).to_bytes()
+            },
+            _ => Builder::build_p2pkh(&coin.as_ref().key_pair.public().address_hash()).to_bytes(),
+        };
         let output = TransactionOutput {
             value: prev_tx.outputs[0].value - fee,
-            script_pubkey: Builder::build_p2pkh(&coin.as_ref().key_pair.public().address_hash()).to_bytes(),
+            script_pubkey,
         };
         let transaction = try_s!(
             coin.p2sh_spending_tx(
@@ -782,7 +788,7 @@ where
             )
             .await
         );
-        let tx_fut = coin.as_ref().rpc_client.send_transaction(&transaction).compat();
+        let tx_fut = coin.as_ref().rpc_client.send_transaction(&transaction, false).compat();
         try_s!(tx_fut.await);
         Ok(transaction.into())
     };
@@ -813,9 +819,15 @@ where
     );
     let fut = async move {
         let fee = try_s!(coin.get_htlc_spend_fee().await);
+        let script_pubkey = match &coin.as_ref().conf.active_address_format {
+            UtxoAddressFormat::Segwit => {
+                Builder::build_p2wpkh(&coin.as_ref().key_pair.public().address_hash()).to_bytes()
+            },
+            _ => Builder::build_p2pkh(&coin.as_ref().key_pair.public().address_hash()).to_bytes(),
+        };
         let output = TransactionOutput {
             value: prev_tx.outputs[0].value - fee,
-            script_pubkey: Builder::build_p2pkh(&coin.as_ref().key_pair.public().address_hash()).to_bytes(),
+            script_pubkey,
         };
         let transaction = try_s!(
             coin.p2sh_spending_tx(
@@ -828,7 +840,7 @@ where
             )
             .await
         );
-        let tx_fut = coin.as_ref().rpc_client.send_transaction(&transaction).compat();
+        let tx_fut = coin.as_ref().rpc_client.send_transaction(&transaction, false).compat();
         try_s!(tx_fut.await);
         Ok(transaction.into())
     };
@@ -856,9 +868,15 @@ where
     );
     let fut = async move {
         let fee = try_s!(coin.get_htlc_spend_fee().await);
+        let script_pubkey = match &coin.as_ref().conf.active_address_format {
+            UtxoAddressFormat::Segwit => {
+                Builder::build_p2wpkh(&coin.as_ref().key_pair.public().address_hash()).to_bytes()
+            },
+            _ => Builder::build_p2pkh(&coin.as_ref().key_pair.public().address_hash()).to_bytes(),
+        };
         let output = TransactionOutput {
             value: prev_tx.outputs[0].value - fee,
-            script_pubkey: Builder::build_p2pkh(&coin.as_ref().key_pair.public().address_hash()).to_bytes(),
+            script_pubkey,
         };
         let transaction = try_s!(
             coin.p2sh_spending_tx(
@@ -871,7 +889,7 @@ where
             )
             .await
         );
-        let tx_fut = coin.as_ref().rpc_client.send_transaction(&transaction).compat();
+        let tx_fut = coin.as_ref().rpc_client.send_transaction(&transaction, false).compat();
         try_s!(tx_fut.await);
         Ok(transaction.into())
     };
@@ -899,9 +917,15 @@ where
     );
     let fut = async move {
         let fee = try_s!(coin.get_htlc_spend_fee().await);
+        let script_pubkey = match &coin.as_ref().conf.active_address_format {
+            UtxoAddressFormat::Segwit => {
+                Builder::build_p2wpkh(&coin.as_ref().key_pair.public().address_hash()).to_bytes()
+            },
+            _ => Builder::build_p2pkh(&coin.as_ref().key_pair.public().address_hash()).to_bytes(),
+        };
         let output = TransactionOutput {
             value: prev_tx.outputs[0].value - fee,
-            script_pubkey: Builder::build_p2pkh(&coin.as_ref().key_pair.public().address_hash()).to_bytes(),
+            script_pubkey,
         };
         let transaction = try_s!(
             coin.p2sh_spending_tx(
@@ -914,7 +938,7 @@ where
             )
             .await
         );
-        let tx_fut = coin.as_ref().rpc_client.send_transaction(&transaction).compat();
+        let tx_fut = coin.as_ref().rpc_client.send_transaction(&transaction, false).compat();
         try_s!(tx_fut.await);
         Ok(transaction.into())
     };
@@ -953,6 +977,20 @@ fn pubkey_from_script_sig(script: &Script) -> Result<H264, String> {
     Ok(pubkey.serialize_compressed().into())
 }
 
+/// Extracts pubkey from witness script
+fn pubkey_from_witness_script(witness_script: &[Bytes]) -> Result<H264, String> {
+    if witness_script.len() != 2 {
+        return ERR!("Invalid witness length {}", witness_script.len());
+    }
+
+    let signature = witness_script[0].clone().take();
+    try_s!(Signature::parse_der(&signature[..signature.len() - 1]));
+
+    let pubkey = try_s!(PublicKey::parse_slice(&witness_script[1], None));
+
+    Ok(pubkey.serialize_compressed().into())
+}
+
 pub async fn is_tx_confirmed_before_block<T>(coin: &T, tx: &RpcTransaction, block_number: u64) -> Result<bool, String>
 where
     T: AsRef<UtxoCoinFields> + Send + Sync + 'static,
@@ -974,8 +1012,12 @@ where
 
 pub fn check_all_inputs_signed_by_pub(tx: &UtxoTx, expected_pub: &[u8]) -> Result<bool, String> {
     for input in &tx.inputs {
-        let script: Script = input.script_sig.clone().into();
-        let pubkey = try_s!(pubkey_from_script_sig(&script));
+        let pubkey = if input.has_witness() {
+            try_s!(pubkey_from_witness_script(&input.script_witness))
+        } else {
+            let script: Script = input.script_sig.clone().into();
+            try_s!(pubkey_from_script_sig(&script))
+        };
         if *pubkey != expected_pub {
             return Ok(false);
         }
@@ -1028,7 +1070,9 @@ where
                 min_block_number,
             );
         }
-        if tx_from_rpc.hex.0 != serialize(&tx).take() {
+        if tx_from_rpc.hex.0 != serialize(&tx).take()
+            && tx_from_rpc.hex.0 != serialize_with_flags(&tx, SERIALIZE_TRANSACTION_WITNESS).take()
+        {
             return ERR!(
                 "Provided dex fee tx {:?} doesn't match tx data from rpc {:?}",
                 tx,
@@ -1259,7 +1303,7 @@ where
 pub fn my_balance(coin: &UtxoCoinFields) -> BalanceFut<CoinBalance> {
     Box::new(
         coin.rpc_client
-            .display_balance(coin.my_address.clone(), &coin.conf.address_format, coin.decimals)
+            .display_balance(coin.my_address.clone(), &coin.conf.active_address_format, coin.decimals)
             .map_to_mm_fut(BalanceError::from)
             // at the moment standard UTXO coins do not have an unspendable balance
             .map(|spendable| CoinBalance {
@@ -1381,7 +1425,7 @@ where
             Ok(Builder::build_p2wpkh(&AddressHash::from(&to.program[..])))
         }
     } else {
-        let to = if conf.address_format.is_cashaddress() {
+        let to = if conf.default_address_format.is_cashaddress() {
             match CashAddress::from_str(&req.to) {
                 Ok(cashaddress) => address_from_str_and_format(conf, &req.to, &UtxoAddressFormat::CashAddress {
                     network: cashaddress.prefix.to_string(),
@@ -1415,7 +1459,7 @@ where
         }
     }?;
 
-    let signature_version = match conf.address_format {
+    let signature_version = match conf.active_address_format {
         UtxoAddressFormat::Segwit => SignatureVersion::WitnessV0,
         _ => conf.signature_version,
     };
@@ -1474,7 +1518,7 @@ where
         amount: big_decimal_from_sat(fee_amount as i64, coin.as_ref().decimals),
     };
     let my_address = coin.my_address().map_to_mm(WithdrawError::InternalError)?;
-    let tx_hex = match conf.address_format {
+    let tx_hex = match conf.active_address_format {
         UtxoAddressFormat::Segwit => serialize_with_flags(&signed, SERIALIZE_TRANSACTION_WITNESS).into(),
         _ => serialize(&signed).into(),
     };
@@ -2430,7 +2474,9 @@ where
                     continue;
                 },
             };
-            if serialize(&tx).take() != tx_from_rpc.0 {
+            if serialize(&tx).take() != tx_from_rpc.0
+                && serialize_with_flags(&tx, SERIALIZE_TRANSACTION_WITNESS).take() != tx_from_rpc.0
+            {
                 return ERR!(
                     "Provided payment tx {:?} doesn't match tx data from rpc {:?}",
                     tx,
@@ -2652,7 +2698,7 @@ where
     T: AsRef<UtxoCoinFields>,
 {
     let decimals = coin.as_ref().decimals;
-    let is_segwit_address = matches!(coin.as_ref().conf.address_format, UtxoAddressFormat::Segwit);
+    let is_segwit_address = matches!(coin.as_ref().conf.active_address_format, UtxoAddressFormat::Segwit);
     let mut unspents = coin
         .as_ref()
         .rpc_client

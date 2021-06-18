@@ -67,6 +67,15 @@ async fn enable_coins_eth_electrum(
     );
     replies.insert("ETH", enable_native(mm, "ETH", eth_urls).await);
     replies.insert("JST", enable_native(mm, "JST", eth_urls).await);
+    replies.insert(
+        "tBTC",
+        enable_electrum(mm, "tBTC", false, &[
+            "electrum1.cipig.net:10068",
+            "electrum2.cipig.net:10068",
+            "electrum3.cipig.net:10068",
+        ])
+        .await,
+    );
     #[cfg(feature = "zhtlc")]
     replies.insert("ZOMBIE", enable_native(mm, "ZOMBIE", eth_urls).await);
     replies
@@ -1052,7 +1061,12 @@ fn test_rpc_password_from_json_no_userpass() {
 
 /// Trading test using coins with remote RPC (Electrum, ETH nodes), it needs only ENV variables to be set, coins daemons are not required.
 /// Trades few pairs concurrently to speed up the process and also act like "load" test
-async fn trade_base_rel_electrum(pairs: &[(&'static str, &'static str)]) {
+async fn trade_base_rel_electrum(
+    pairs: &[(&'static str, &'static str)],
+    maker_price: i32,
+    taker_price: i32,
+    volume: f64,
+) {
     let bob_passphrase = get_passphrase(&".env.seed", "BOB_PASSPHRASE").unwrap();
     let alice_passphrase = get_passphrase(&".env.client", "ALICE_PASSPHRASE").unwrap();
 
@@ -1061,7 +1075,8 @@ async fn trade_base_rel_electrum(pairs: &[(&'static str, &'static str)]) {
         {"coin":"MORTY","asset":"MORTY","required_confirmations":0,"txversion":4,"overwintered":1,"protocol":{"type":"UTXO"}},
         {"coin":"ETH","name":"ethereum","protocol":{"type":"ETH"}},
         {"coin":"ZOMBIE","asset":"ZOMBIE","fname":"ZOMBIE (TESTCOIN)","txversion":4,"overwintered":1,"mm2":1,"protocol":{"type":"ZHTLC"}},
-        {"coin":"JST","name":"jst","protocol":{"type":"ERC20","protocol_data":{"platform":"ETH","contract_address":"0x2b294F029Fde858b2c62184e8390591755521d8E"}}}
+        {"coin":"JST","name":"jst","protocol":{"type":"ERC20","protocol_data":{"platform":"ETH","contract_address":"0x2b294F029Fde858b2c62184e8390591755521d8E"}}},
+        {"coin":"tBTC","name":"tbitcoin","fname":"tBitcoin","pubtype":111,"p2shtype":196,"wiftype":239,"segwit":true,"bech32_hrp":"tb","txfee":0,"estimate_fee_mode":"ECONOMICAL","mm2":1,"required_confirmations":0,"protocol":{"type":"UTXO"},"address_format":{"format":"segwit"}}
     ]);
 
     let mut mm_bob = MarketMakerIt::start(
@@ -1148,8 +1163,8 @@ async fn trade_base_rel_electrum(pairs: &[(&'static str, &'static str)]) {
                 "method": "setprice",
                 "base": base,
                 "rel": rel,
-                "price": 1,
-                "volume": 0.1
+                "price": maker_price,
+                "volume": volume
             }))
             .await
             .unwrap();
@@ -1180,8 +1195,8 @@ async fn trade_base_rel_electrum(pairs: &[(&'static str, &'static str)]) {
                 "method": "buy",
                 "base": base,
                 "rel": rel,
-                "volume": 0.1,
-                "price": 2
+                "volume": volume,
+                "price": taker_price
             }))
             .await
             .unwrap();
@@ -1240,8 +1255,8 @@ async fn trade_base_rel_electrum(pairs: &[(&'static str, &'static str)]) {
             &uuid,
             &TAKER_SUCCESS_EVENTS,
             &TAKER_ERROR_EVENTS,
-            "0.1".parse().unwrap(),
-            "0.1".parse().unwrap(),
+            volume.into(),
+            volume.into(),
         )
         .await;
 
@@ -1251,8 +1266,8 @@ async fn trade_base_rel_electrum(pairs: &[(&'static str, &'static str)]) {
             &uuid,
             &MAKER_SUCCESS_EVENTS,
             &MAKER_ERROR_EVENTS,
-            "0.1".parse().unwrap(),
-            "0.1".parse().unwrap(),
+            volume.into(),
+            volume.into(),
         )
         .await;
     }
@@ -1303,7 +1318,21 @@ fn trade_test_electrum_and_eth_coins() {
     } else {
         &[("ETH", "JST")]
     };
-    block_on(trade_base_rel_electrum(pairs));
+    block_on(trade_base_rel_electrum(pairs, 1, 2, 0.1));
+}
+
+#[test]
+#[cfg(not(target_arch = "wasm32"))]
+fn trade_test_electrum_and_maker_segwit() {
+    let pairs: &[_] = &[("tBTC", "RICK")];
+    block_on(trade_base_rel_electrum(pairs, 1, 1, 0.0001));
+}
+
+#[test]
+#[cfg(not(target_arch = "wasm32"))]
+fn trade_test_electrum_and_taker_segwit() {
+    let pairs: &[_] = &[("RICK", "tBTC")];
+    block_on(trade_base_rel_electrum(pairs, 1, 1, 0.0001));
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -1313,7 +1342,7 @@ pub extern "C" fn trade_test_electrum_and_eth_coins(cb_id: i32) {
 
     common::executor::spawn(async move {
         let pairs = [("ETH", "JST")];
-        trade_base_rel_electrum(&pairs).await;
+        trade_base_rel_electrum(&pairs, 1, 2, 0.1).await;
         call_back(cb_id, null(), 0)
     })
 }
@@ -1785,7 +1814,7 @@ fn test_tbtc_withdraw_to_cashaddresses_should_fail() {
     let mut enable_res = HashMap::new();
     enable_res.insert("tBTC", electrum_response);
 
-    // Send from Legacy Address to Cashaddress should fail
+    // Send from BTC Legacy Address to Cashaddress should fail
     let withdraw = block_on(mm_alice.rpc(json!({
         "userpass": mm_alice.userpass,
         "method": "withdraw",
@@ -4310,7 +4339,7 @@ fn test_withdraw_cashaddresses_to_legacy() {
 
 #[test]
 #[cfg(not(target_arch = "wasm32"))]
-fn test_withdraw_legacy_to_cashhaddress_fails() {
+fn test_withdraw_legacy_to_cashhaddress() {
     let coins = json!([
         {"coin":"BCH","pubtype":0,"p2shtype":5,"mm2":1,"fork_id": "0x40","protocol":{"type":"UTXO"},
          "address_format":{"format":"cashaddress","network":"bchtest"}},
@@ -4364,10 +4393,38 @@ fn test_withdraw_legacy_to_cashhaddress_fails() {
     })))
     .unwrap();
 
-    assert!(withdraw.0.is_server_error(), "BCH withdraw: {}", withdraw.1);
-    log!([withdraw.1]);
+    assert!(withdraw.0.is_success(), "BCH withdraw: {}", withdraw.1);
+    let withdraw_json: Json = json::from_str(&withdraw.1).unwrap();
+    log!((withdraw_json));
 
-    block_on(mm.stop()).unwrap();
+    // check "from" addresses
+    let from: Vec<&str> = withdraw_json["from"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert_eq!(from, vec!["12Tz6nWqA7e5tV7m6d1EzMkNs6MQVW4UMw"]);
+
+    // check "to" addresses
+    let to: Vec<&str> = withdraw_json["to"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert_eq!(to, vec!["bchtest:qr39na5d25wdeecgw3euh9fkd4ygvd4pnsury96597"]);
+
+    // send the transaction
+    let send_tx = block_on(mm.rpc(json! ({
+        "userpass": mm.userpass,
+        "method": "send_raw_transaction",
+        "coin": "BCH",
+        "tx_hex": withdraw_json["tx_hex"],
+    })))
+    .unwrap();
+    assert!(send_tx.0.is_success(), "BCH send_raw_transaction: {}", send_tx.1);
+    log!((send_tx.1));
 }
 
 #[test]

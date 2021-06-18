@@ -55,7 +55,7 @@ use rand::seq::SliceRandom;
 use rpc::v1::types::{Bytes as BytesJson, Transaction as RpcTransaction, H256 as H256Json};
 use script::{Builder, Script, SignatureVersion, TransactionInputSigner};
 use serde_json::{self as json, Value as Json};
-use serialization::serialize;
+use serialization::{serialize, serialize_with_flags, SERIALIZE_TRANSACTION_WITNESS};
 use std::collections::{HashMap, HashSet};
 use std::convert::TryInto;
 use std::num::NonZeroU64;
@@ -122,7 +122,13 @@ fn get_special_folder_path() -> PathBuf {
 fn get_special_folder_path() -> PathBuf { panic!("!windows") }
 
 impl Transaction for UtxoTx {
-    fn tx_hex(&self) -> Vec<u8> { serialize(self).into() }
+    fn tx_hex(&self) -> Vec<u8> {
+        if self.has_witness() {
+            serialize_with_flags(self, SERIALIZE_TRANSACTION_WITNESS).into()
+        } else {
+            serialize(self).into()
+        }
+    }
 
     fn tx_hash(&self) -> BytesJson { self.hash().reversed().to_vec().into() }
 }
@@ -402,8 +408,10 @@ pub struct UtxoCoinConf {
     /// Does coin require transactions to be notarized to be considered as confirmed?
     /// https://komodoplatform.com/security-delayed-proof-of-work-dpow/
     pub requires_notarization: AtomicBool,
+    /// The address format indicates the default address format from coin config file
+    pub default_address_format: UtxoAddressFormat,
     /// The address format indicates how to parse and display UTXO addresses over RPC calls
-    pub address_format: UtxoAddressFormat,
+    pub active_address_format: UtxoAddressFormat,
     /// Is current coin KMD asset chain?
     /// https://komodoplatform.atlassian.net/wiki/spaces/KPSD/pages/71729160/What+is+a+Parallel+Chain+Asset+Chain
     pub asset_chain: bool,
@@ -841,7 +849,8 @@ impl<'a> UtxoConfBuilder<'a> {
 
         let bech32_hrp = self.bech32_hrp();
 
-        let address_format = try_s!(self.address_format());
+        let default_address_format = self.default_address_format();
+        let active_address_format = try_s!(self.active_address_format());
 
         let asset_chain = self.asset_chain();
         let tx_version = self.tx_version();
@@ -881,7 +890,8 @@ impl<'a> UtxoConfBuilder<'a> {
             segwit,
             wif_prefix,
             tx_version,
-            address_format,
+            default_address_format,
+            active_address_format,
             asset_chain,
             tx_fee_volatility_percent,
             version_group_id,
@@ -933,7 +943,11 @@ impl<'a> UtxoConfBuilder<'a> {
 
     fn bech32_hrp(&self) -> Option<String> { json::from_value(self.conf["bech32_hrp"].clone()).unwrap_or(None) }
 
-    fn address_format(&self) -> Result<UtxoAddressFormat, String> {
+    fn default_address_format(&self) -> UtxoAddressFormat {
+        json::from_value(self.conf["address_format"].clone()).unwrap_or(UtxoAddressFormat::Standard)
+    }
+
+    fn active_address_format(&self) -> Result<UtxoAddressFormat, String> {
         let mut format: Option<UtxoAddressFormat> = try_s!(json::from_value(self.req["address_format"].clone()));
         if format.is_none() {
             format = try_s!(json::from_value(self.conf["address_format"].clone()))
@@ -1696,19 +1710,24 @@ where
         })
         .collect();
 
+    let (signature_version, is_segwit_address) = match &coin.as_ref().conf.active_address_format {
+        UtxoAddressFormat::Segwit => (SignatureVersion::WitnessV0, true),
+        _ => (coin.as_ref().conf.signature_version, false),
+    };
+
     let prev_script = Builder::build_p2pkh(&coin.as_ref().my_address.hash);
     let signed = try_s!(sign_tx(
         unsigned,
         &coin.as_ref().key_pair,
         prev_script,
-        coin.as_ref().conf.signature_version,
+        signature_version,
         coin.as_ref().conf.fork_id
     ));
 
     try_s!(
         coin.as_ref()
             .rpc_client
-            .send_transaction(&signed)
+            .send_transaction(&signed, is_segwit_address)
             .map_err(|e| ERRL!("{}", e))
             .compat()
             .await
