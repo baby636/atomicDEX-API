@@ -1,7 +1,7 @@
 #![cfg_attr(target_arch = "wasm32", allow(unused_macros))]
 #![cfg_attr(target_arch = "wasm32", allow(dead_code))]
 
-use crate::utxo::{sat_from_big_decimal, UtxoAddressFormat};
+use crate::utxo::{output_script, sat_from_big_decimal};
 use crate::{NumConversError, RpcTransportEventHandler, RpcTransportEventHandlerShared};
 use bigdecimal::BigDecimal;
 use chain::{BlockHeader, OutPoint, Transaction as UtxoTx};
@@ -26,10 +26,9 @@ use futures01::{Future, Sink, Stream};
 use http::header::AUTHORIZATION;
 use http::Uri;
 use http::{Request, StatusCode};
-use keys::Address;
+use keys::{Address, AddressFormat as UtxoAddressFormat};
 #[cfg(test)] use mocktopus::macros::*;
 use rpc::v1::types::{Bytes as BytesJson, Transaction as RpcTransaction, H256 as H256Json};
-use script::Builder;
 use serde_json::{self as json, Value as Json};
 use serialization::{deserialize, serialize, serialize_with_flags, CoinVariant, CompactInteger, Reader,
                     SERIALIZE_TRANSACTION_WITNESS};
@@ -212,13 +211,9 @@ impl From<NumConversError> for UtxoRpcError {
 
 /// Common operations that both types of UTXO clients have but implement them differently
 pub trait UtxoRpcClientOps: fmt::Debug + Send + Sync + 'static {
-    fn list_unspent(&self, address: &Address, decimals: u8, is_segwit_address: bool) -> UtxoRpcFut<Vec<UnspentInfo>>;
+    fn list_unspent(&self, address: &Address, decimals: u8) -> UtxoRpcFut<Vec<UnspentInfo>>;
 
-    fn send_transaction(
-        &self,
-        tx: &UtxoTx,
-        is_segwit_address: bool,
-    ) -> Box<dyn Future<Item = H256Json, Error = String> + Send + 'static>;
+    fn send_transaction(&self, tx: &UtxoTx) -> Box<dyn Future<Item = H256Json, Error = String> + Send + 'static>;
 
     fn send_raw_transaction(&self, tx: BytesJson) -> UtxoRpcFut<H256Json>;
 
@@ -228,8 +223,7 @@ pub trait UtxoRpcClientOps: fmt::Debug + Send + Sync + 'static {
 
     fn get_block_count(&self) -> UtxoRpcFut<u64>;
 
-    fn display_balance(&self, address: Address, address_format: &UtxoAddressFormat, decimals: u8)
-        -> RpcRes<BigDecimal>;
+    fn display_balance(&self, address: Address, decimals: u8) -> RpcRes<BigDecimal>;
 
     /// returns fee estimation per KByte in satoshis
     fn estimate_fee_sat(
@@ -551,11 +545,10 @@ impl JsonRpcClient for NativeClientImpl {
 
 #[cfg_attr(test, mockable)]
 impl UtxoRpcClientOps for NativeClient {
-    fn list_unspent(&self, address: &Address, decimals: u8, is_segwit_address: bool) -> UtxoRpcFut<Vec<UnspentInfo>> {
-        let addresses = if is_segwit_address {
-            vec![address.to_segwitaddress().unwrap().to_string()]
-        } else {
-            vec![address.to_string()]
+    fn list_unspent(&self, address: &Address, decimals: u8) -> UtxoRpcFut<Vec<UnspentInfo>> {
+        let addresses = match address.addr_format {
+            UtxoAddressFormat::Segwit => vec![address.to_segwitaddress().unwrap().to_string()],
+            _ => vec![address.to_string()],
         };
         let fut = self
             .list_unspent_impl(0, std::i32::MAX, addresses)
@@ -579,12 +572,8 @@ impl UtxoRpcClientOps for NativeClient {
         Box::new(fut)
     }
 
-    fn send_transaction(
-        &self,
-        tx: &UtxoTx,
-        is_segwit_address: bool,
-    ) -> Box<dyn Future<Item = H256Json, Error = String> + Send + 'static> {
-        let tx_bytes = if is_segwit_address {
+    fn send_transaction(&self, tx: &UtxoTx) -> Box<dyn Future<Item = H256Json, Error = String> + Send + 'static> {
+        let tx_bytes = if tx.has_witness() {
             BytesJson::from(serialize_with_flags(tx, SERIALIZE_TRANSACTION_WITNESS))
         } else {
             BytesJson::from(serialize(tx))
@@ -609,12 +598,7 @@ impl UtxoRpcClientOps for NativeClient {
         Box::new(self.0.get_block_count().map_to_mm_fut(UtxoRpcError::from))
     }
 
-    fn display_balance(
-        &self,
-        address: Address,
-        _address_format: &UtxoAddressFormat,
-        _decimals: u8,
-    ) -> RpcRes<BigDecimal> {
+    fn display_balance(&self, address: Address, _decimals: u8) -> RpcRes<BigDecimal> {
         Box::new(
             self.list_unspent_impl(0, std::i32::MAX, vec![address.to_string()])
                 .map(|unspents| {
@@ -1481,12 +1465,8 @@ impl ElectrumClient {
 
 #[cfg_attr(test, mockable)]
 impl UtxoRpcClientOps for ElectrumClient {
-    fn list_unspent(&self, address: &Address, _decimals: u8, is_segwit_address: bool) -> UtxoRpcFut<Vec<UnspentInfo>> {
-        let script = if is_segwit_address {
-            Builder::build_p2wpkh(&address.hash)
-        } else {
-            Builder::build_p2pkh(&address.hash)
-        };
+    fn list_unspent(&self, address: &Address, _decimals: u8) -> UtxoRpcFut<Vec<UnspentInfo>> {
+        let script = output_script(address);
         let script_hash = electrum_script_hash(&script);
         Box::new(
             self.scripthash_list_unspent(&hex::encode(script_hash))
@@ -1507,12 +1487,8 @@ impl UtxoRpcClientOps for ElectrumClient {
         )
     }
 
-    fn send_transaction(
-        &self,
-        tx: &UtxoTx,
-        is_segwit_address: bool,
-    ) -> Box<dyn Future<Item = H256Json, Error = String> + Send + 'static> {
-        let bytes = if is_segwit_address {
+    fn send_transaction(&self, tx: &UtxoTx) -> Box<dyn Future<Item = H256Json, Error = String> + Send + 'static> {
+        let bytes = if tx.has_witness() {
             BytesJson::from(serialize_with_flags(tx, SERIALIZE_TRANSACTION_WITNESS))
         } else {
             BytesJson::from(serialize(tx))
@@ -1549,16 +1525,8 @@ impl UtxoRpcClientOps for ElectrumClient {
         )
     }
 
-    fn display_balance(
-        &self,
-        address: Address,
-        address_format: &UtxoAddressFormat,
-        decimals: u8,
-    ) -> RpcRes<BigDecimal> {
-        let hash = match address_format {
-            UtxoAddressFormat::Segwit => electrum_script_hash(&Builder::build_p2wpkh(&address.hash)),
-            _ => electrum_script_hash(&Builder::build_p2pkh(&address.hash)),
-        };
+    fn display_balance(&self, address: Address, decimals: u8) -> RpcRes<BigDecimal> {
+        let hash = electrum_script_hash(&output_script(&address));
         let hash_str = hex::encode(hash);
         Box::new(self.scripthash_get_balance(&hash_str).map(move |result| {
             BigDecimal::from(result.confirmed + result.unconfirmed) / BigDecimal::from(10u64.pow(decimals as u32))

@@ -27,11 +27,7 @@ pub trait QtumBasedCoin: AsRef<UtxoCoinFields> + UtxoCommonOps + MarketCoinOps {
         let balance = self
             .as_ref()
             .rpc_client
-            .display_balance(
-                self.as_ref().my_address.clone(),
-                &self.as_ref().conf.active_address_format,
-                self.as_ref().decimals,
-            )
+            .display_balance(self.as_ref().my_address.clone(), self.as_ref().decimals)
             .compat()
             .await?;
 
@@ -82,6 +78,7 @@ pub trait QtumBasedCoin: AsRef<UtxoCoinFields> + UtxoCommonOps + MarketCoinOps {
             hash: address.0.into(),
             checksum_type: utxo.conf.checksum_type,
             hrp: utxo.conf.bech32_hrp.clone(),
+            addr_format: utxo.my_address.addr_format.clone(),
         }
     }
 
@@ -95,6 +92,7 @@ pub trait QtumBasedCoin: AsRef<UtxoCoinFields> + UtxoCommonOps + MarketCoinOps {
             hash: address.0.into(),
             checksum_type: utxo.conf.checksum_type,
             hrp: utxo.conf.bech32_hrp.clone(),
+            addr_format: utxo.my_address.addr_format.clone(),
         }
     }
 
@@ -105,7 +103,8 @@ pub trait QtumBasedCoin: AsRef<UtxoCoinFields> + UtxoCommonOps + MarketCoinOps {
             utxo.conf.pub_addr_prefix,
             utxo.conf.pub_t_addr_prefix,
             utxo.conf.checksum_type,
-            utxo.conf.bech32_hrp.clone()
+            utxo.conf.bech32_hrp.clone(),
+            utxo.my_address.addr_format.clone()
         ));
         Ok(qtum::contract_addr_from_utxo_addr(qtum_address))
     }
@@ -155,19 +154,15 @@ impl UtxoCommonOps for QtumCoin {
     async fn get_htlc_spend_fee(&self) -> UtxoRpcResult<u64> { utxo_common::get_htlc_spend_fee(self).await }
 
     fn addresses_from_script(&self, script: &Script) -> Result<Vec<Address>, String> {
-        utxo_common::addresses_from_script(&self.utxo_arc.conf, script)
+        utxo_common::addresses_from_script(&self.utxo_arc, script)
     }
 
     fn denominate_satoshis(&self, satoshi: i64) -> f64 { utxo_common::denominate_satoshis(&self.utxo_arc, satoshi) }
 
     fn my_public_key(&self) -> &Public { self.utxo_arc.key_pair.public() }
 
-    fn display_address(&self, address: &Address) -> Result<String, String> {
-        utxo_common::display_address(&self.utxo_arc.conf, address)
-    }
-
     fn address_from_str(&self, address: &str) -> Result<Address, String> {
-        utxo_common::address_from_str(&self.utxo_arc.conf, address)
+        utxo_common::address_from_str(&self.utxo_arc, address)
     }
 
     async fn get_current_mtp(&self) -> UtxoRpcResult<u32> {

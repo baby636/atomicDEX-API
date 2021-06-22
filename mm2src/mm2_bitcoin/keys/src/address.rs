@@ -7,6 +7,7 @@
 
 use base58::{FromBase58, ToBase58};
 use crypto::{checksum, dgroestl512, dhash256, keccak256, ChecksumType};
+use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::ops::Deref;
 use std::str::FromStr;
@@ -26,6 +27,39 @@ pub enum Type {
     P2SH,
 }
 
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(tag = "format")]
+pub enum AddressFormat {
+    /// Standard UTXO address format.
+    /// In Bitcoin Cash context the standard format also known as 'legacy'.
+    #[serde(rename = "standard")]
+    Standard,
+    /// Segwit Address
+    /// https://github.com/bitcoin/bips/blob/master/bip-0173.mediawiki
+    #[serde(rename = "segwit")]
+    Segwit,
+    /// Bitcoin Cash specific address format.
+    /// https://github.com/bitcoincashorg/bitcoincash.org/blob/master/spec/cashaddr.md
+    #[serde(rename = "cashaddress")]
+    CashAddress {
+        network: String,
+        #[serde(default)]
+        pub_addr_prefix: u8,
+        #[serde(default)]
+        p2sh_addr_prefix: u8,
+    },
+}
+
+impl Default for AddressFormat {
+    fn default() -> Self { AddressFormat::Standard }
+}
+
+impl AddressFormat {
+    pub fn is_segwit(&self) -> bool { matches!(*self, AddressFormat::Segwit) }
+
+    pub fn is_cashaddress(&self) -> bool { matches!(*self, AddressFormat::CashAddress { .. }) }
+}
+
 /// `AddressHash` with prefix and t addr zcash prefix
 #[derive(Debug, PartialEq, Clone)]
 pub struct Address {
@@ -39,6 +73,8 @@ pub struct Address {
     pub hash: AddressHash,
     /// Checksum type
     pub checksum_type: ChecksumType,
+    /// Address Format
+    pub addr_format: AddressFormat,
 }
 
 pub fn detect_checksum(data: &[u8], checksum: &[u8]) -> Result<ChecksumType, Error> {
@@ -99,6 +135,7 @@ impl DisplayLayout for Address {
                     hash,
                     checksum_type: sum_type,
                     hrp: None,
+                    addr_format: AddressFormat::Standard,
                 };
 
                 Ok(address)
@@ -115,6 +152,7 @@ impl DisplayLayout for Address {
                     hash,
                     checksum_type: sum_type,
                     hrp: None,
+                    addr_format: AddressFormat::Standard,
                 };
 
                 Ok(address)
@@ -145,12 +183,35 @@ impl From<&'static str> for Address {
 }
 
 impl Address {
+    pub fn display_address(&self) -> Result<String, String> {
+        match &self.addr_format {
+            AddressFormat::Standard => Ok(self.to_string()),
+            AddressFormat::Segwit => match &self.hrp {
+                Some(hrp) => Ok(SegwitAddress::new(&self.hash, hrp.clone()).to_string()),
+                None => ERR!("Cannot display segwit address for a coin with no bech32_hrp in config"),
+            },
+
+            AddressFormat::CashAddress {
+                network,
+                pub_addr_prefix,
+                p2sh_addr_prefix,
+            } => self
+                .to_cashaddress(&network, *pub_addr_prefix, *p2sh_addr_prefix)
+                .and_then(|cashaddress| cashaddress.encode()),
+        }
+    }
+
     pub fn from_cashaddress(
         cashaddr: &str,
         checksum_type: ChecksumType,
         p2pkh_prefix: u8,
         p2sh_prefix: u8,
+        addr_format: AddressFormat,
     ) -> Result<Address, String> {
+        if addr_format == AddressFormat::Segwit {
+            return Err("Segwit address format is not supported".into());
+        }
+
         let address = CashAddress::decode(cashaddr)?;
 
         if address.hash.len() != 20 {
@@ -174,6 +235,7 @@ impl Address {
             hash,
             checksum_type,
             hrp: None,
+            addr_format,
         })
     }
 
@@ -220,6 +282,7 @@ impl Address {
             hash,
             checksum_type,
             hrp,
+            addr_format: AddressFormat::Segwit,
         })
     }
 
@@ -233,7 +296,7 @@ impl Address {
 
 #[cfg(test)]
 mod tests {
-    use super::{Address, ChecksumType};
+    use super::{Address, AddressFormat, ChecksumType};
 
     #[test]
     fn test_address_to_string() {
@@ -243,6 +306,7 @@ mod tests {
             hash: "3f4aa1fedf1f54eeb03b759deadb36676b184911".into(),
             checksum_type: ChecksumType::DSHA256,
             hrp: None,
+            addr_format: AddressFormat::Standard,
         };
 
         assert_eq!("16meyfSoQV6twkAAxPe51RtMVz7PGRmWna".to_owned(), address.to_string());
@@ -256,6 +320,7 @@ mod tests {
             hash: "05aab5342166f8594baf17a7d9bef5d567443327".into(),
             checksum_type: ChecksumType::DSHA256,
             hrp: None,
+            addr_format: AddressFormat::Standard,
         };
 
         assert_eq!("R9o9xTocqr6CeEDGDH6mEYpwLoMz6jNjMW".to_owned(), address.to_string());
@@ -269,6 +334,7 @@ mod tests {
             hash: "05aab5342166f8594baf17a7d9bef5d567443327".into(),
             checksum_type: ChecksumType::DSHA256,
             hrp: None,
+            addr_format: AddressFormat::Standard,
         };
 
         assert_eq!("tmAEKD7psc1ajK76QMGEW8WGQSBBHf9SqCp".to_owned(), address.to_string());
@@ -282,6 +348,7 @@ mod tests {
             hash: "ca0c3786c96ff7dacd40fdb0f7c196528df35f85".into(),
             checksum_type: ChecksumType::DSHA256,
             hrp: None,
+            addr_format: AddressFormat::Standard,
         };
 
         assert_eq!("bX9bppqdGvmCCAujd76Tq76zs1suuPnB9A".to_owned(), address.to_string());
@@ -295,6 +362,7 @@ mod tests {
             hash: "3f4aa1fedf1f54eeb03b759deadb36676b184911".into(),
             checksum_type: ChecksumType::DSHA256,
             hrp: None,
+            addr_format: AddressFormat::Standard,
         };
 
         assert_eq!(address, "16meyfSoQV6twkAAxPe51RtMVz7PGRmWna".into());
@@ -309,6 +377,7 @@ mod tests {
             hash: "05aab5342166f8594baf17a7d9bef5d567443327".into(),
             checksum_type: ChecksumType::DSHA256,
             hrp: None,
+            addr_format: AddressFormat::Standard,
         };
 
         assert_eq!(address, "R9o9xTocqr6CeEDGDH6mEYpwLoMz6jNjMW".into());
@@ -323,6 +392,7 @@ mod tests {
             hash: "05aab5342166f8594baf17a7d9bef5d567443327".into(),
             checksum_type: ChecksumType::DSHA256,
             hrp: None,
+            addr_format: AddressFormat::Standard,
         };
 
         assert_eq!(address, "tmAEKD7psc1ajK76QMGEW8WGQSBBHf9SqCp".into());
@@ -337,6 +407,7 @@ mod tests {
             hash: "ca0c3786c96ff7dacd40fdb0f7c196528df35f85".into(),
             checksum_type: ChecksumType::DSHA256,
             hrp: None,
+            addr_format: AddressFormat::Standard,
         };
 
         assert_eq!(address, "bX9bppqdGvmCCAujd76Tq76zs1suuPnB9A".into());
@@ -351,6 +422,7 @@ mod tests {
             hash: "c3f710deb7320b0efa6edb14e3ebeeb9155fa90d".into(),
             checksum_type: ChecksumType::DGROESTL512,
             hrp: None,
+            addr_format: AddressFormat::Standard,
         };
 
         assert_eq!(address, "Fo2tBkpzaWQgtjFUkemsYnKyfvd2i8yTki".into());
@@ -365,6 +437,7 @@ mod tests {
             hash: "56bb05aa20f5a80cf84e90e5dab05be331333e27".into(),
             checksum_type: ChecksumType::KECCAK256,
             hrp: None,
+            addr_format: AddressFormat::Standard,
         };
 
         assert_eq!(address, "SVCbBs6FvPYxJrYoJc4TdCe47QNCgmTabv".into());
@@ -385,7 +458,9 @@ mod tests {
         ];
 
         for i in 0..3 {
-            let actual_address = Address::from_cashaddress(cashaddresses[i], ChecksumType::DSHA256, 0, 5).unwrap();
+            let actual_address =
+                Address::from_cashaddress(cashaddresses[i], ChecksumType::DSHA256, 0, 5, AddressFormat::Standard)
+                    .unwrap();
             let expected_address: Address = expected[i].into();
             assert_eq!(actual_address, expected_address);
             let actual_cashaddress = actual_address
@@ -405,7 +480,8 @@ mod tests {
                 "bitcoincash:qgagf7w02x4wnz3mkwnchut2vxphjzccwxgjvvjmlsxqwkcw59jxxuz",
                 ChecksumType::DSHA256,
                 0,
-                5
+                5,
+                AddressFormat::Standard
             ),
             Err("Expect 20 bytes long hash".into())
         );
@@ -422,6 +498,11 @@ mod tests {
             .into(),
             checksum_type: ChecksumType::DSHA256,
             hrp: None,
+            addr_format: AddressFormat::CashAddress {
+                network: "bitcoincash".into(),
+                pub_addr_prefix: 0,
+                p2sh_addr_prefix: 5,
+            },
         };
 
         assert_eq!(

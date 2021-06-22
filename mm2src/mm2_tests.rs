@@ -4213,7 +4213,7 @@ fn test_withdraw_cashaddresses() {
     let electrum: Json = json::from_str(&electrum.1).unwrap();
     log!([electrum]);
 
-    // make withdraw
+    // make withdraw from cashaddress to cashaddress
     let withdraw = block_on(mm.rpc(json! ({
         "userpass": mm.userpass,
         "method": "withdraw",
@@ -4255,54 +4255,11 @@ fn test_withdraw_cashaddresses() {
     .unwrap();
     assert!(send_tx.0.is_success(), "BCH send_raw_transaction: {}", send_tx.1);
     log!((send_tx.1));
-}
 
-#[test]
-#[cfg(not(target_arch = "wasm32"))]
-fn test_withdraw_cashaddresses_to_legacy() {
-    let coins = json!([
-        {"coin":"BCH","pubtype":0,"p2shtype":5,"mm2":1,"fork_id": "0x40","protocol":{"type":"UTXO"},
-         "address_format":{"format":"cashaddress","network":"bchtest"}},
-    ]);
+    // Wait 5 seconds to avoid double spending
+    thread::sleep(Duration::from_secs(5));
 
-    let mm = MarketMakerIt::start(
-        json! ({
-            "gui": "nogui",
-            "netid": 9998,
-            "myipaddr": env::var ("BOB_TRADE_IP") .ok(),
-            "rpcip": env::var ("BOB_TRADE_IP") .ok(),
-            "passphrase": "face pin lock number add byte put seek mime test note password sin tab multiple",
-            "coins": coins,
-            "i_am_seed": true,
-            "rpc_password": "pass",
-        }),
-        "pass".into(),
-        local_start!("bob"),
-    )
-    .unwrap();
-    let (_dump_log, _dump_dashboard) = mm.mm_dump();
-    log!({ "log path: {}", mm.log_path.display() });
-
-    let electrum = block_on(mm.rpc(json! ({
-        "userpass": mm.userpass,
-        "method": "electrum",
-        "coin": "BCH",
-        "servers": [{"url":"blackie.c3-soft.com:60001"},{"url":"testnet.imaginary.cash:50001"}],
-        "mm2": 1,
-    })))
-    .unwrap();
-
-    assert_eq!(
-        electrum.0,
-        StatusCode::OK,
-        "RPC «electrum» failed with {} {}",
-        electrum.0,
-        electrum.1
-    );
-    let electrum: Json = json::from_str(&electrum.1).unwrap();
-    log!([electrum]);
-
-    // make withdraw
+    // make withdraw from cashaddress to legacy
     let withdraw = block_on(mm.rpc(json! ({
         "userpass": mm.userpass,
         "method": "withdraw",
@@ -4344,33 +4301,18 @@ fn test_withdraw_cashaddresses_to_legacy() {
     .unwrap();
     assert!(send_tx.0.is_success(), "BCH send_raw_transaction: {}", send_tx.1);
     log!((send_tx.1));
-}
 
-#[test]
-#[cfg(not(target_arch = "wasm32"))]
-fn test_withdraw_legacy_to_cashhaddress() {
-    let coins = json!([
-        {"coin":"BCH","pubtype":0,"p2shtype":5,"mm2":1,"fork_id": "0x40","protocol":{"type":"UTXO"},
-         "address_format":{"format":"cashaddress","network":"bchtest"}},
-    ]);
+    // Wait 5 seconds to avoid double spending
+    thread::sleep(Duration::from_secs(5));
 
-    let mm = MarketMakerIt::start(
-        json! ({
-            "gui": "nogui",
-            "netid": 9998,
-            "myipaddr": env::var ("BOB_TRADE_IP") .ok(),
-            "rpcip": env::var ("BOB_TRADE_IP") .ok(),
-            "passphrase": "face pin lock number add byte put seek mime test note password sin tab multiple",
-            "coins": coins,
-            "i_am_seed": true,
-            "rpc_password": "pass",
-        }),
-        "pass".into(),
-        local_start!("bob"),
-    )
+    //Disable BCH to enable in Legacy Mode
+    let rc = block_on(mm.rpc(json!({
+        "userpass": mm.userpass,
+        "method": "disable_coin",
+        "coin": "BCH",
+    })))
     .unwrap();
-    let (_dump_log, _dump_dashboard) = mm.mm_dump();
-    log!({ "log path: {}", mm.log_path.display() });
+    assert_eq!(rc.0, StatusCode::OK, "RPC «disable_coin» failed with status «{}»", rc.0);
 
     let electrum = block_on(mm.rpc(json! ({
         "userpass": mm.userpass,
@@ -4392,7 +4334,7 @@ fn test_withdraw_legacy_to_cashhaddress() {
     let electrum: Json = json::from_str(&electrum.1).unwrap();
     log!([electrum]);
 
-    // make withdraw
+    // make withdraw from Legacy to Cashaddress
     let withdraw = block_on(mm.rpc(json! ({
         "userpass": mm.userpass,
         "method": "withdraw",
@@ -4434,6 +4376,67 @@ fn test_withdraw_legacy_to_cashhaddress() {
     .unwrap();
     assert!(send_tx.0.is_success(), "BCH send_raw_transaction: {}", send_tx.1);
     log!((send_tx.1));
+}
+
+#[test]
+#[cfg(not(target_arch = "wasm32"))]
+fn test_withdraw_to_different_cashaddress_network_should_fail() {
+    let coins = json!([
+        {"coin":"BCH","pubtype":0,"p2shtype":5,"mm2":1,"fork_id": "0x40","protocol":{"type":"UTXO"},
+         "address_format":{"format":"cashaddress","network":"bchtest"}},
+    ]);
+
+    let mm = MarketMakerIt::start(
+        json! ({
+            "gui": "nogui",
+            "netid": 9998,
+            "myipaddr": env::var ("BOB_TRADE_IP") .ok(),
+            "rpcip": env::var ("BOB_TRADE_IP") .ok(),
+            "passphrase": "face pin lock number add byte put seek mime test note password sin tab multiple",
+            "coins": coins,
+            "i_am_seed": true,
+            "rpc_password": "pass",
+        }),
+        "pass".into(),
+        local_start!("bob"),
+    )
+    .unwrap();
+    let (_dump_log, _dump_dashboard) = mm.mm_dump();
+    log!({ "log path: {}", mm.log_path.display() });
+
+    let electrum = block_on(mm.rpc(json! ({
+        "userpass": mm.userpass,
+        "method": "electrum",
+        "coin": "BCH",
+        "servers": [{"url":"blackie.c3-soft.com:60001"},{"url":"testnet.imaginary.cash:50001"}],
+        "mm2": 1,
+    })))
+    .unwrap();
+
+    assert_eq!(
+        electrum.0,
+        StatusCode::OK,
+        "RPC «electrum» failed with {} {}",
+        electrum.0,
+        electrum.1
+    );
+    let electrum: Json = json::from_str(&electrum.1).unwrap();
+    log!([electrum]);
+
+    // make withdraw to from bchtest to bitcoincash should fail
+    let withdraw = block_on(mm.rpc(json! ({
+        "userpass": mm.userpass,
+        "method": "withdraw",
+        "coin": "BCH",
+        "to": "bitcoincash:qqyf96yqdrpa8f6pkf9f00ap068m5tgvly28qsfq9p",
+        "amount": 0.00001,
+    })))
+    .unwrap();
+
+    assert!(withdraw.0.is_server_error(), "BCH withdraw: {}", withdraw.1);
+    log!([withdraw.1]);
+
+    block_on(mm.stop()).unwrap();
 }
 
 #[test]

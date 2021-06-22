@@ -71,6 +71,7 @@ fn utxo_coin_fields_for_test(rpc_client: UtxoRpcClientEnum, force_seed: Option<&
         t_addr_prefix: 0,
         checksum_type,
         hrp: None,
+        addr_format: UtxoAddressFormat::Standard,
     };
     let my_script_pubkey = Builder::build_p2pkh(&my_address.hash).to_bytes();
 
@@ -82,7 +83,6 @@ fn utxo_coin_fields_for_test(rpc_client: UtxoRpcClientEnum, force_seed: Option<&
             segwit: false,
             tx_version: 4,
             default_address_format: UtxoAddressFormat::Standard,
-            active_address_format: UtxoAddressFormat::Standard,
             asset_chain: true,
             p2sh_addr_prefix: 85,
             p2sh_t_addr_prefix: 0,
@@ -1299,11 +1299,6 @@ fn test_address_from_str_with_cashaddress_activated() {
     ))
     .unwrap();
 
-    assert_eq!(
-        coin.address_from_str("bitcoincash:qzxqqt9lh4feptf0mplnk58gnajfepzwcq9f2rxk55"),
-        Ok("1DmFp16U73RrVZtYUbo2Ectt8mAnYScpqM".into())
-    );
-
     let error = coin
         .address_from_str("1DmFp16U73RrVZtYUbo2Ectt8mAnYScpqM")
         .err()
@@ -1337,18 +1332,6 @@ fn test_address_from_str_with_legacy_address_activated() {
         &ctx, "BCH", &conf, &req, &[1u8; 32],
     ))
     .unwrap();
-
-    let expected = Address::from_cashaddress(
-        "bitcoincash:qzxqqt9lh4feptf0mplnk58gnajfepzwcq9f2rxk55",
-        coin.as_ref().conf.checksum_type,
-        coin.as_ref().conf.pub_addr_prefix,
-        coin.as_ref().conf.p2sh_addr_prefix,
-    )
-    .unwrap();
-    assert_eq!(
-        coin.address_from_str("1DmFp16U73RrVZtYUbo2Ectt8mAnYScpqM"),
-        Ok(expected)
-    );
 
     let error = coin
         .address_from_str("bitcoincash:qzxqqt9lh4feptf0mplnk58gnajfepzwcq9f2rxk55")
@@ -1657,7 +1640,7 @@ fn test_ordered_mature_unspents_from_cache_impl(
     verbose.height = cached_height;
 
     // prepare mocks
-    ElectrumClient::list_unspent.mock_safe(move |_, _, _, _| {
+    ElectrumClient::list_unspent.mock_safe(move |_, _, _| {
         let unspents = vec![UnspentInfo {
             outpoint: OutPoint {
                 hash: H256::from_reversed_str(TX_HASH),
@@ -1851,7 +1834,7 @@ fn test_native_client_unspents_filtered_using_tx_cache_single_tx_in_cache() {
         tx.outputs.clone(),
     );
     NativeClient::list_unspent
-        .mock_safe(move |_, _, _, _| MockResult::Return(Box::new(futures01::future::ok(spent_by_tx.clone()))));
+        .mock_safe(move |_, _, _| MockResult::Return(Box::new(futures01::future::ok(spent_by_tx.clone()))));
 
     let address: Address = "RGfFZaaNV68uVe1uMf6Y37Y8E1i2SyYZBN".into();
     let (unspents_ordered, _) = block_on(coin.list_unspent_ordered(&address)).unwrap();
@@ -1946,7 +1929,7 @@ fn test_native_client_unspents_filtered_using_tx_cache_single_several_chained_tx
     unspents_to_return.extend(spent_by_tx_2);
 
     NativeClient::list_unspent
-        .mock_safe(move |_, _, _, _| MockResult::Return(Box::new(futures01::future::ok(unspents_to_return.clone()))));
+        .mock_safe(move |_, _, _| MockResult::Return(Box::new(futures01::future::ok(unspents_to_return.clone()))));
 
     let (unspents_ordered, _) = block_on(coin.list_unspent_ordered(&address)).unwrap();
 

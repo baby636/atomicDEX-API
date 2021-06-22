@@ -526,10 +526,6 @@ impl UtxoCommonOps for ZCoin {
 
     fn my_public_key(&self) -> &Public { self.utxo_arc.key_pair.public() }
 
-    fn display_address(&self, address: &Address) -> Result<String, String> {
-        utxo_common::display_address(&self.utxo_arc.conf, address)
-    }
-
     fn address_from_str(&self, address: &str) -> Result<Address, String> {
         utxo_common::address_from_str(&self.utxo_arc.conf, address)
     }
