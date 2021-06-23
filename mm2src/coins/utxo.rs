@@ -454,6 +454,11 @@ pub struct UtxoCoinFields {
     pub tx_hash_algo: TxHashAlgo,
 }
 
+#[derive(Debug, Display)]
+pub enum UnsupportedAddr {
+    Dummy,
+}
+
 impl UtxoCoinFields {
     pub fn transaction_preimage(&self) -> TransactionInputSigner {
         let lock_time = if self.conf.ticker == "KMD" {
@@ -479,6 +484,47 @@ impl UtxoCoinFields {
             zcash: self.conf.zcash,
             str_d_zeel: None,
             hash_algo: self.tx_hash_algo.into(),
+        }
+    }
+
+    pub fn check_withdraw_address_supported(&self, addr: &Address) -> Result<(), MmError<UnsupportedAddr>> {
+        let conf = &self.conf;
+
+        match addr.addr_format {
+            // As of now, consider that legacy is supported with any configured formats
+            // We can change this depending on the coins implementation
+            UtxoAddressFormat::Standard => {
+                let is_p2pkh = addr.prefix == conf.pub_addr_prefix && addr.t_addr_prefix == conf.pub_t_addr_prefix;
+                let is_p2sh = addr.prefix == conf.p2sh_addr_prefix
+                    && addr.t_addr_prefix == conf.p2sh_t_addr_prefix
+                    && conf.segwit;
+                if !is_p2pkh && !is_p2sh {
+                    MmError::err(UnsupportedAddr::Dummy)
+                } else {
+                    Ok(())
+                }
+            },
+            UtxoAddressFormat::Segwit => {
+                // it seems sufficient to just check this flag here
+                if !conf.segwit {
+                    return MmError::err(UnsupportedAddr::Dummy);
+                }
+
+                if addr.hrp != conf.bech32_hrp {
+                    MmError::err(UnsupportedAddr::Dummy)
+                } else {
+                    Ok(())
+                }
+            },
+            UtxoAddressFormat::CashAddress { .. } => {
+                // Here we can just compare whether the default address format or my_address format is equal to the
+                // input address, it also includes the cash addr prefix check
+                if addr.addr_format == conf.default_address_format || addr.addr_format == self.my_address.addr_format {
+                    Ok(())
+                } else {
+                    MmError::err(UnsupportedAddr::Dummy)
+                }
+            },
         }
     }
 }
