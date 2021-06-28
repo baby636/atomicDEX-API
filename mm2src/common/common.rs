@@ -102,7 +102,9 @@ pub mod privkey;
 pub mod seri;
 #[path = "patterns/state_machine.rs"] pub mod state_machine;
 
-#[cfg(target_arch = "wasm32")] pub mod wasm_indexed_db;
+#[cfg(target_arch = "wasm32")]
+#[path = "indexed_db/indexed_db.rs"]
+pub mod indexed_db;
 #[cfg(target_arch = "wasm32")] pub mod wasm_rpc;
 #[cfg(target_arch = "wasm32")]
 #[path = "transport/wasm_ws.rs"]
