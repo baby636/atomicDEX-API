@@ -1,311 +1,187 @@
-use crate::TransactionDetails;
+use crate::{TransactionDetails, TxHistoryError, TxHistoryResult};
 use async_trait::async_trait;
+use common::indexed_db::{DbTransactionError, DbUpgrader, IndexedDb, IndexedDbBuilder, InitDbError, InitDbResult,
+                         InitializeDb, OnUpgradeResult, TableSignature};
 use common::mm_error::prelude::*;
-use derive_more::Display;
-use std::path::PathBuf;
 
-#[cfg(not(target_arch = "wasm32"))]
-pub use native_db::TxHistoryDb;
-#[cfg(target_arch = "wasm32")] pub use wasm_db::TxHistoryDb;
+const DB_NAME: &str = "tx_history";
+const DB_VERSION: u32 = 1;
 
-pub type TxHistoryResult<T> = Result<T, MmError<TxHistoryError>>;
+impl From<InitDbError> for TxHistoryError {
+    fn from(e: InitDbError) -> Self {
+        match &e {
+            InitDbError::NotSupported(_) => TxHistoryError::NotSupported(e.to_string()),
+            InitDbError::EmptyTableList
+            | InitDbError::DbIsOpenAlready { .. }
+            | InitDbError::InvalidVersion(_)
+            | InitDbError::OpeningError(_)
+            | InitDbError::TypeMismatch { .. }
+            | InitDbError::UnexpectedState(_)
+            | InitDbError::UpgradingError { .. } => TxHistoryError::InternalError(e.to_string()),
+        }
+    }
+}
 
-#[derive(Debug, Display)]
-pub enum TxHistoryError {
-    ErrorSerializing(String),
-    ErrorDeserializing(String),
-    ErrorSaving(String),
-    ErrorLoading(String),
-    ErrorClearing(String),
-    NotSupported(String),
-    InternalError(String),
+impl From<DbTransactionError> for TxHistoryError {
+    fn from(e: DbTransactionError) -> Self {
+        match e {
+            DbTransactionError::ErrorSerializingItem(_) => TxHistoryError::ErrorSerializing(e.to_string()),
+            DbTransactionError::ErrorDeserializingItem(_) => TxHistoryError::ErrorDeserializing(e.to_string()),
+            DbTransactionError::ErrorUploadingItem(_) => TxHistoryError::ErrorSaving(e.to_string()),
+            DbTransactionError::ErrorGettingItems(_) => TxHistoryError::ErrorLoading(e.to_string()),
+            DbTransactionError::ErrorDeletingItems(_) => TxHistoryError::ErrorClearing(e.to_string()),
+            DbTransactionError::NoSuchTable { .. }
+            | DbTransactionError::ErrorCreatingTransaction(_)
+            | DbTransactionError::ErrorOpeningTable { .. }
+            | DbTransactionError::ErrorSerializingIndex { .. }
+            | DbTransactionError::UnexpectedState(_)
+            | DbTransactionError::TransactionAborted
+            | DbTransactionError::NoSuchIndex { .. }
+            | DbTransactionError::InvalidIndex { .. } => TxHistoryError::InternalError(e.to_string()),
+        }
+    }
+}
+
+pub struct TxHistoryDb {
+    inner: IndexedDb,
 }
 
 #[async_trait]
-pub trait TxHistoryOps {
-    async fn init_with_fs_path(db_dir: PathBuf) -> TxHistoryResult<TxHistoryDb>;
+impl InitializeDb for TxHistoryDb {
+    async fn init() -> InitDbResult<Self> {
+        let inner = IndexedDbBuilder::new(DB_NAME)
+            .with_version(DB_VERSION)
+            .with_table::<TxHistoryTable>()
+            .build()
+            .await?;
+        Ok(TxHistoryDb { inner })
+    }
+}
 
-    async fn load_history(&mut self, ticker: &str, wallet_address: &str) -> TxHistoryResult<Vec<TransactionDetails>>;
+impl TxHistoryDb {
+    pub async fn load_history(&self, ticker: &str, wallet_address: &str) -> TxHistoryResult<Vec<TransactionDetails>> {
+        let history_id = HistoryId::new(ticker, wallet_address);
 
-    async fn save_history(
-        &mut self,
+        let transaction = self.inner.transaction().await?;
+        let table = transaction.table::<TxHistoryTable>().await?;
+
+        let items = table.get_items("history_id", history_id.as_str()).await?;
+        if items.len() > 1 {
+            let error = format!(
+                "Expected only one item by the 'history_id' index, found {}",
+                items.len()
+            );
+            return MmError::err(TxHistoryError::InternalError(error));
+        }
+
+        let mut item_iter = items.into_iter();
+        match item_iter.next() {
+            Some((_item_id, TxHistoryTable { txs, .. })) => Ok(txs),
+            None => Ok(Vec::new()),
+        }
+    }
+
+    pub async fn save_history(
+        &self,
         ticker: &str,
         wallet_address: &str,
         txs: Vec<TransactionDetails>,
-    ) -> TxHistoryResult<()>;
+    ) -> TxHistoryResult<()> {
+        let history_id = HistoryId::new(ticker, wallet_address);
+        let history_id_value = history_id.to_string();
+        let tx_history_item = TxHistoryTable { history_id, txs };
 
-    async fn clear(&mut self, ticker: &str, wallet_address: &str) -> TxHistoryResult<()>;
-}
+        let transaction = self.inner.transaction().await?;
+        let table = transaction.table::<TxHistoryTable>().await?;
 
-#[cfg(not(target_arch = "wasm32"))]
-mod native_db {
-    use super::*;
-    use async_std::fs;
-    use futures::AsyncWriteExt;
-    use serde_json as json;
-    use std::io;
-
-    pub struct TxHistoryDb {
-        tx_history_path: PathBuf,
-    }
-
-    #[async_trait]
-    impl TxHistoryOps for TxHistoryDb {
-        async fn init_with_fs_path(db_dir: PathBuf) -> TxHistoryResult<TxHistoryDb> {
-            Ok(TxHistoryDb {
-                tx_history_path: db_dir,
-            })
-        }
-
-        async fn load_history(
-            &mut self,
-            ticker: &str,
-            wallet_address: &str,
-        ) -> TxHistoryResult<Vec<TransactionDetails>> {
-            let path = self.ticker_history_path(ticker, wallet_address);
-            let content = match fs::read(&path).await {
-                Ok(content) => content,
-                Err(err) if err.kind() == io::ErrorKind::NotFound => {
-                    return Ok(Vec::new());
-                },
-                Err(err) => {
-                    let error = format!("Error '{}' reading from the history file {}", err, path.display());
-                    return MmError::err(TxHistoryError::ErrorLoading(error));
-                },
-            };
-            json::from_slice(&content).map_to_mm(|e| TxHistoryError::ErrorDeserializing(e.to_string()))
-        }
-
-        async fn save_history(
-            &mut self,
-            ticker: &str,
-            wallet_address: &str,
-            txs: Vec<TransactionDetails>,
-        ) -> TxHistoryResult<()> {
-            let content = json::to_vec(&txs).map_to_mm(|e| TxHistoryError::ErrorSerializing(e.to_string()))?;
-            let path = self.ticker_history_path(ticker, wallet_address);
-
-            let tmp_file = format!("{}.tmp", path.display());
-            let fut = async {
-                let mut file = fs::File::create(&tmp_file).await?;
-                file.write_all(&content).await?;
-                file.flush().await?;
-                fs::rename(&tmp_file, &path).await?;
-                Ok(())
-            };
-            let res: io::Result<_> = fut.await;
-            if let Err(e) = res {
-                let error = format!("Error '{}' creating/writing/renaming the tmp file {}", e, tmp_file);
-                return MmError::err(TxHistoryError::ErrorSaving(error));
-            }
-            Ok(())
-        }
-
-        async fn clear(&mut self, ticker: &str, wallet_address: &str) -> TxHistoryResult<()> {
-            fs::remove_file(&self.ticker_history_path(ticker, wallet_address))
-                .await
-                .map_to_mm(|e| TxHistoryError::ErrorClearing(e.to_string()))
-        }
-    }
-
-    impl TxHistoryDb {
-        fn ticker_history_path(&self, ticker: &str, wallet_address: &str) -> PathBuf {
-            // BCH cash address format has colon after prefix, e.g. bitcoincash:
-            // Colon can't be used in file names on Windows so it should be escaped
-            let wallet_address = wallet_address.replace(":", "_");
-            self.tx_history_path.join(format!("{}_{}.json", ticker, wallet_address))
-        }
-    }
-}
-
-#[cfg(target_arch = "wasm32")]
-mod wasm_db {
-    use super::*;
-    use common::indexed_db::{DbTransactionError, DbUpgrader, IndexedDb, IndexedDbBuilder, InitDbError,
-                             OnUpgradeResult, TableSignature};
-
-    const DB_NAME: &str = "tx_history";
-    const DB_VERSION: u32 = 1;
-
-    impl From<InitDbError> for TxHistoryError {
-        fn from(e: InitDbError) -> Self {
-            match &e {
-                InitDbError::NotSupported(_) => TxHistoryError::NotSupported(e.to_string()),
-                InitDbError::EmptyTableList
-                | InitDbError::DbIsOpenAlready { .. }
-                | InitDbError::InvalidVersion(_)
-                | InitDbError::OpeningError(_)
-                | InitDbError::TypeMismatch { .. }
-                | InitDbError::UnexpectedState(_)
-                | InitDbError::UpgradingError { .. } => TxHistoryError::InternalError(e.to_string()),
-            }
-        }
-    }
-
-    impl From<DbTransactionError> for TxHistoryError {
-        fn from(e: DbTransactionError) -> Self {
-            match e {
-                DbTransactionError::ErrorSerializingItem(_) => TxHistoryError::ErrorSerializing(e.to_string()),
-                DbTransactionError::ErrorDeserializingItem(_) => TxHistoryError::ErrorDeserializing(e.to_string()),
-                DbTransactionError::ErrorUploadingItem(_) => TxHistoryError::ErrorSaving(e.to_string()),
-                DbTransactionError::ErrorGettingItems(_) => TxHistoryError::ErrorLoading(e.to_string()),
-                DbTransactionError::ErrorDeletingItems(_) => TxHistoryError::ErrorClearing(e.to_string()),
-                DbTransactionError::NoSuchTable { .. }
-                | DbTransactionError::ErrorCreatingTransaction(_)
-                | DbTransactionError::ErrorOpeningTable { .. }
-                | DbTransactionError::UnexpectedState(_)
-                | DbTransactionError::TransactionAborted
-                | DbTransactionError::NoSuchIndex { .. }
-                | DbTransactionError::InvalidIndex { .. } => TxHistoryError::InternalError(e.to_string()),
-            }
-        }
-    }
-
-    pub struct TxHistoryDb {
-        inner: IndexedDb,
-    }
-
-    #[async_trait]
-    impl TxHistoryOps for TxHistoryDb {
-        async fn init_with_fs_path(_path: PathBuf) -> TxHistoryResult<TxHistoryDb> {
-            let inner = IndexedDbBuilder::new(DB_NAME)
-                .with_version(DB_VERSION)
-                .with_table::<TxHistoryTable>()
-                .build()
-                .await?;
-            Ok(TxHistoryDb { inner })
-        }
-
-        async fn load_history(
-            &mut self,
-            ticker: &str,
-            wallet_address: &str,
-        ) -> TxHistoryResult<Vec<TransactionDetails>> {
-            let history_id = HistoryId::new(ticker, wallet_address);
-
-            let transaction = self.inner.transaction().await?;
-            let table = transaction.table::<TxHistoryTable>().await?;
-
-            let items = table.get_items("history_id", history_id.as_str()).await?;
-            if items.len() > 1 {
+        // First, check if the coin's tx history exists already.
+        let ids = table.get_item_ids("history_id", &history_id_value).await?;
+        match ids.len() {
+            // The history doesn't exist, add the new `tx_history_item`.
+            0 => {
+                table.add_item(&tx_history_item).await?;
+            },
+            // The history exists already, replace it with the actual `tx_history_item`.
+            1 => {
+                let item_id = ids[0];
+                table.replace_item(item_id, &tx_history_item).await?;
+            },
+            unexpected_len => {
                 let error = format!(
                     "Expected only one item by the 'history_id' index, found {}",
-                    items.len()
+                    unexpected_len
                 );
                 return MmError::err(TxHistoryError::InternalError(error));
-            }
-
-            let mut item_iter = items.into_iter();
-            match item_iter.next() {
-                Some((_item_id, TxHistoryTable { txs, .. })) => Ok(txs),
-                None => Ok(Vec::new()),
-            }
+            },
         }
 
-        async fn save_history(
-            &mut self,
-            ticker: &str,
-            wallet_address: &str,
-            txs: Vec<TransactionDetails>,
-        ) -> TxHistoryResult<()> {
-            let history_id = HistoryId::new(ticker, wallet_address);
-            let history_id_value = history_id.to_string();
-            let tx_history_item = TxHistoryTable { history_id, txs };
-
-            let transaction = self.inner.transaction().await?;
-            let table = transaction.table::<TxHistoryTable>().await?;
-
-            // First, check if the coin's tx history exists already.
-            let ids = table.get_item_ids("history_id", &history_id_value).await?;
-            match ids.len() {
-                // The history doesn't exist, add the new `tx_history_item`.
-                0 => {
-                    table.add_item(&tx_history_item).await?;
-                },
-                // The history exists already, replace it with the actual `tx_history_item`.
-                1 => {
-                    let item_id = ids[0];
-                    table.replace_item(item_id, tx_history_item).await?;
-                },
-                unexpected_len => {
-                    let error = format!(
-                        "Expected only one item by the 'history_id' index, found {}",
-                        unexpected_len
-                    );
-                    return MmError::err(TxHistoryError::InternalError(error));
-                },
-            }
-
-            transaction.wait_for_complete().await?;
-            Ok(())
-        }
-
-        async fn clear(&mut self, ticker: &str, wallet_address: &str) -> TxHistoryResult<()> {
-            let history_id = HistoryId::new(ticker, wallet_address);
-
-            let transaction = self.inner.transaction().await?;
-            let table = transaction.table::<TxHistoryTable>().await?;
-
-            // First, check if the coin's tx history exists.
-            let ids = table.get_item_ids("history_id", history_id.as_str()).await?;
-            match ids.len() {
-                // The history doesn't exist, we don't need to do anything.
-                0 => (),
-                1 => {
-                    let item_id = ids[0];
-                    table.delete_item(item_id).await?;
-                },
-                unexpected_len => {
-                    let error = format!(
-                        "Expected only one item by the 'history_id' index, found {}",
-                        unexpected_len
-                    );
-                    return MmError::err(TxHistoryError::InternalError(error));
-                },
-            }
-
-            transaction.wait_for_complete().await?;
-            Ok(())
-        }
+        transaction.wait_for_complete().await?;
+        Ok(())
     }
 
-    #[derive(Debug, Deserialize, Serialize)]
-    struct HistoryId(String);
+    pub async fn clear(&self, ticker: &str, wallet_address: &str) -> TxHistoryResult<()> {
+        let history_id = HistoryId::new(ticker, wallet_address);
 
-    impl HistoryId {
-        fn new(ticker: &str, wallet_address: &str) -> HistoryId { HistoryId(format!("{}_{}", ticker, wallet_address)) }
+        let transaction = self.inner.transaction().await?;
+        let table = transaction.table::<TxHistoryTable>().await?;
 
-        fn as_str(&self) -> &str { &self.0 }
-
-        fn to_string(&self) -> String { self.0.clone() }
-    }
-
-    #[derive(Debug, Deserialize, Serialize)]
-    struct TxHistoryTable {
-        history_id: HistoryId,
-        txs: Vec<TransactionDetails>,
-    }
-
-    impl TableSignature for TxHistoryTable {
-        fn table_name() -> &'static str { "tx_history" }
-
-        fn on_upgrade_needed(upgrader: &DbUpgrader, old_version: u32, new_version: u32) -> OnUpgradeResult<()> {
-            match (old_version, new_version) {
-                (0, 1) => {
-                    let table = upgrader.create_table(Self::table_name())?;
-                    table.create_index("history_id", true)?;
-                },
-                (1, 1) => (),
-                v => panic!("Unexpected (old, new) versions: {:?}", v),
-            }
-            Ok(())
+        // First, check if the coin's tx history exists.
+        let ids = table.get_item_ids("history_id", history_id.as_str()).await?;
+        match ids.len() {
+            // The history doesn't exist, we don't need to do anything.
+            0 => (),
+            1 => {
+                let item_id = ids[0];
+                table.delete_item(item_id).await?;
+            },
+            unexpected_len => {
+                let error = format!(
+                    "Expected only one item by the 'history_id' index, found {}",
+                    unexpected_len
+                );
+                return MmError::err(TxHistoryError::InternalError(error));
+            },
         }
+
+        transaction.wait_for_complete().await?;
+        Ok(())
     }
 }
 
-#[cfg(target_arch = "wasm32")]
+#[derive(Debug, Deserialize, Serialize)]
+struct HistoryId(String);
+
+impl HistoryId {
+    fn new(ticker: &str, wallet_address: &str) -> HistoryId { HistoryId(format!("{}_{}", ticker, wallet_address)) }
+
+    fn as_str(&self) -> &str { &self.0 }
+
+    fn to_string(&self) -> String { self.0.clone() }
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct TxHistoryTable {
+    history_id: HistoryId,
+    txs: Vec<TransactionDetails>,
+}
+
+impl TableSignature for TxHistoryTable {
+    fn table_name() -> &'static str { "tx_history" }
+
+    fn on_upgrade_needed(upgrader: &DbUpgrader, old_version: u32, new_version: u32) -> OnUpgradeResult<()> {
+        match (old_version, new_version) {
+            (0, 1) => {
+                let table = upgrader.create_table(Self::table_name())?;
+                table.create_index("history_id", true)?;
+            },
+            (1, 1) => (),
+            v => panic!("Unexpected (old, new) versions: {:?}", v),
+        }
+        Ok(())
+    }
+}
+
 mod tests {
-    use super::wasm_db::*;
     use super::*;
     use serde_json as json;
     use wasm_bindgen_test::*;
@@ -314,9 +190,7 @@ mod tests {
 
     #[wasm_bindgen_test]
     async fn test_tx_history() {
-        let mut db = TxHistoryDb::init_with_fs_path(PathBuf::default())
-            .await
-            .expect("!TxHistoryDb::init_with_fs_path");
+        let db = TxHistoryDb::init().await.expect("!TxHistoryDb::init_with_fs_path");
 
         let history = db
             .load_history("RICK", "RRnMcSeKiLrNdbp91qNVQwwXx5azD4S4CD")

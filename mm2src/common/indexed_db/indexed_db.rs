@@ -10,6 +10,7 @@
 use crate::executor::spawn_local;
 use crate::log::debug;
 use crate::mm_error::prelude::*;
+use async_trait::async_trait;
 use futures::channel::{mpsc, oneshot};
 use futures::StreamExt;
 use serde::de::DeserializeOwned;
@@ -20,9 +21,12 @@ use std::marker::PhantomData;
 use std::sync::Mutex;
 
 mod db_driver;
+mod db_lock;
 
 pub use db_driver::{DbTransactionError, DbTransactionResult, DbUpgrader, InitDbError, InitDbResult, ItemId,
                     OnUpgradeResult};
+pub use db_lock::{get_or_initialize_db, DbLocked};
+
 use db_driver::{IdbDatabaseBuilder, IdbDatabaseImpl, IdbObjectStoreImpl, IdbTransactionImpl, OnUpgradeNeededCb};
 
 type DbEventTx = mpsc::UnboundedSender<internal::DbEvent>;
@@ -33,6 +37,11 @@ pub trait TableSignature: DeserializeOwned + Serialize + 'static {
     fn table_name() -> &'static str;
 
     fn on_upgrade_needed(upgrader: &DbUpgrader, old_version: u32, new_version: u32) -> OnUpgradeResult<()>;
+}
+
+#[async_trait]
+pub trait InitializeDb: Sized {
+    async fn init() -> InitDbResult<Self>;
 }
 
 pub struct IndexedDbBuilder {
@@ -245,11 +254,18 @@ impl<Table: TableSignature> DbTable<'_, Table> {
         send_event_recv_response(&self.event_tx, event, result_rx).await
     }
 
-    pub async fn get_items(&self, index: &str, index_value: &str) -> DbTransactionResult<Vec<(ItemId, Table)>> {
+    pub async fn get_items<Value>(&self, index: &str, index_value: Value) -> DbTransactionResult<Vec<(ItemId, Table)>>
+    where
+        Value: Serialize,
+    {
         let (result_tx, result_rx) = oneshot::channel();
+        let index_value = json::to_value(index_value).map_to_mm(|e| DbTransactionError::ErrorSerializingIndex {
+            index: index.to_owned(),
+            description: e.to_string(),
+        })?;
         let event = internal::DbTableEvent::GetItems {
             index: index.to_owned(),
-            index_value: index_value.to_owned(),
+            index_value,
             result_tx,
         };
         send_event_recv_response(&self.event_tx, event, result_rx)
@@ -257,11 +273,18 @@ impl<Table: TableSignature> DbTable<'_, Table> {
             .and_then(|items| Self::deserialize_items(items))
     }
 
-    pub async fn get_item_ids(&self, index: &str, index_value: &str) -> DbTransactionResult<Vec<ItemId>> {
+    pub async fn get_item_ids<Value>(&self, index: &str, index_value: Value) -> DbTransactionResult<Vec<ItemId>>
+    where
+        Value: Serialize,
+    {
         let (result_tx, result_rx) = oneshot::channel();
+        let index_value = json::to_value(index_value).map_to_mm(|e| DbTransactionError::ErrorSerializingIndex {
+            index: index.to_owned(),
+            description: e.to_string(),
+        })?;
         let event = internal::DbTableEvent::GetItemIds {
             index: index.to_owned(),
-            index_value: index_value.to_owned(),
+            index_value,
             result_tx,
         };
         send_event_recv_response(&self.event_tx, event, result_rx).await
@@ -275,8 +298,8 @@ impl<Table: TableSignature> DbTable<'_, Table> {
             .and_then(|items| Self::deserialize_items(items))
     }
 
-    pub async fn replace_item(&self, item_id: ItemId, item: Table) -> DbTransactionResult<ItemId> {
-        let item = json::to_value(&item).map_to_mm(|e| DbTransactionError::ErrorSerializingItem(e.to_string()))?;
+    pub async fn replace_item(&self, item_id: ItemId, item: &Table) -> DbTransactionResult<ItemId> {
+        let item = json::to_value(item).map_to_mm(|e| DbTransactionError::ErrorSerializingItem(e.to_string()))?;
 
         let (result_tx, result_rx) = oneshot::channel();
         let event = internal::DbTableEvent::ReplaceItem {
@@ -330,7 +353,7 @@ async fn table_event_loop(mut rx: mpsc::UnboundedReceiver<internal::DbTableEvent
                 index_value,
                 result_tx,
             } => {
-                let res = table.get_items(&index, &index_value).await;
+                let res = table.get_items(&index, index_value).await;
                 result_tx.send(res).ok();
             },
             internal::DbTableEvent::GetItemIds {
@@ -338,7 +361,7 @@ async fn table_event_loop(mut rx: mpsc::UnboundedReceiver<internal::DbTableEvent
                 index_value,
                 result_tx,
             } => {
-                let res = table.get_item_ids(&index, &index_value).await;
+                let res = table.get_item_ids(&index, index_value).await;
                 result_tx.send(res).ok();
             },
             internal::DbTableEvent::GetAllItems { result_tx } => {
@@ -398,12 +421,12 @@ mod internal {
         },
         GetItems {
             index: String,
-            index_value: String,
+            index_value: Json,
             result_tx: oneshot::Sender<DbTransactionResult<Vec<(ItemId, Json)>>>,
         },
         GetItemIds {
             index: String,
-            index_value: String,
+            index_value: Json,
             result_tx: oneshot::Sender<DbTransactionResult<Vec<ItemId>>>,
         },
         GetAllItems {
@@ -604,7 +627,7 @@ mod tests {
             .expect("!DbTransaction::open_table");
 
         let rick_tx_1_updated_id = table
-            .replace_item(rick_tx_1_id, rick_tx_1_updated.clone())
+            .replace_item(rick_tx_1_id, &rick_tx_1_updated)
             .await
             .expect("!Couldn't replace an item");
         assert_eq!(rick_tx_1_updated_id, rick_tx_1_id);
@@ -820,5 +843,73 @@ mod tests {
             .build()
             .await
             .expect("!IndexedDb::init second time");
+    }
+
+    #[wasm_bindgen_test]
+    async fn test_non_string_index() {
+        const DB_NAME: &str = "TEST_NON_STRING_INDEX";
+        const DB_VERSION: u32 = 1;
+
+        #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+        struct Uuid(Vec<u64>);
+
+        #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+        #[serde(deny_unknown_fields)]
+        struct SwapTable {
+            swap_uuid: Uuid,
+            started_at: u64,
+            some_data: String,
+        }
+
+        impl TableSignature for SwapTable {
+            fn table_name() -> &'static str { "swap_table" }
+
+            fn on_upgrade_needed(upgrader: &DbUpgrader, old_version: u32, _new_version: u32) -> OnUpgradeResult<()> {
+                if old_version > 0 {
+                    // the table is initialized already
+                    return Ok(());
+                }
+                let table_upgrader = upgrader.create_table("swap_table")?;
+                table_upgrader.create_index("swap_uuid", false)?;
+                table_upgrader.create_index("started_at", false)
+            }
+        }
+
+        register_wasm_log(LogLevel::Debug);
+
+        let swap_1 = SwapTable {
+            swap_uuid: Uuid(vec![1, 2, 3]),
+            started_at: 123,
+            some_data: "Some data 1".to_owned(),
+        };
+        let swap_2 = SwapTable {
+            swap_uuid: Uuid(vec![3, 2, 1]),
+            started_at: 321,
+            some_data: "Some data 2".to_owned(),
+        };
+
+        let db = IndexedDbBuilder::new(DB_NAME)
+            .with_version(DB_VERSION)
+            .with_table::<SwapTable>()
+            .build()
+            .await
+            .expect("!IndexedDb::init");
+        let transaction = db.transaction().await.expect("!IndexedDb::transaction()");
+        let table = transaction
+            .table::<SwapTable>()
+            .await
+            .expect("!DbTransaction::open_table");
+
+        let swap_1_id = table.add_item(&swap_1).await.expect("Couldn't add an item");
+        let swap_2_id = table.add_item(&swap_2).await.expect("Couldn't add an item");
+
+        let actual = table
+            .get_items("swap_uuid", vec![3, 2, 1])
+            .await
+            .expect("Couldn't get items");
+        assert_eq!(actual, vec![(swap_2_id, swap_2)]);
+
+        let actual = table.get_items("started_at", 123).await.expect("Couldn't get items");
+        assert_eq!(actual, vec![(swap_1_id, swap_1)]);
     }
 }

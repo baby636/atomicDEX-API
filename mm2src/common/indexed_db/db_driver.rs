@@ -84,6 +84,8 @@ pub enum DbTransactionError {
     ErrorCreatingTransaction(String),
     #[display(fmt = "Error opening the '{}' table: {}", table, description)]
     ErrorOpeningTable { table: String, description: String },
+    #[display(fmt = "Error serializing the '{}' index: {:?}", index, description)]
+    ErrorSerializingIndex { index: String, description: String },
     #[display(fmt = "Error serializing an item: {:?}", _0)]
     ErrorSerializingItem(String),
     #[display(fmt = "Error deserializing an item: {:?}", _0)]
@@ -99,7 +101,7 @@ pub enum DbTransactionError {
     #[display(fmt = "Invalid index '{}:{}': {:?}", index, index_value, description)]
     InvalidIndex {
         index: String,
-        index_value: String,
+        index_value: Json,
         description: String,
     },
     #[display(fmt = "Error occurred due to an unexpected state: {:?}", _0)]
@@ -446,15 +448,17 @@ impl IdbObjectStoreImpl {
         Self::item_id_from_completed_request(&add_request)
     }
 
-    pub async fn get_items(&self, index_str: &str, index_value_str: &str) -> DbTransactionResult<Vec<(ItemId, Json)>> {
+    pub async fn get_items(&self, index_str: &str, index_value: Json) -> DbTransactionResult<Vec<(ItemId, Json)>> {
         if self.aborted.load(Ordering::Relaxed) {
             return MmError::err(DbTransactionError::TransactionAborted);
         }
 
         let index = index_str.to_owned();
-        let index_value = index_value_str.to_owned();
-
-        let index_value_js = JsValue::from(index_value_str);
+        let index_value_js =
+            JsValue::from_serde(&index_value).map_to_mm(|e| DbTransactionError::ErrorSerializingIndex {
+                index: index.clone(),
+                description: e.to_string(),
+            })?;
 
         let db_index = match self.object_store.index(index_str) {
             Ok(index) => index,
@@ -480,15 +484,17 @@ impl IdbObjectStoreImpl {
         Self::items_from_completed_request(&get_request)
     }
 
-    pub async fn get_item_ids(&self, index_str: &str, index_value_str: &str) -> DbTransactionResult<Vec<ItemId>> {
+    pub async fn get_item_ids(&self, index_str: &str, index_value: Json) -> DbTransactionResult<Vec<ItemId>> {
         if self.aborted.load(Ordering::Relaxed) {
             return MmError::err(DbTransactionError::TransactionAborted);
         }
 
         let index = index_str.to_owned();
-        let index_value = index_value_str.to_owned();
-
-        let index_value_js = JsValue::from(index_value_str);
+        let index_value_js =
+            JsValue::from_serde(&index_value).map_to_mm(|e| DbTransactionError::ErrorSerializingIndex {
+                index: index.clone(),
+                description: e.to_string(),
+            })?;
 
         let db_index = match self.object_store.index(index_str) {
             Ok(index) => index,
