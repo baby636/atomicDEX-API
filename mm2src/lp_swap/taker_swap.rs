@@ -5,9 +5,9 @@ use super::swap_lock::{SwapLock, SwapLockOps};
 use super::trade_preimage::{TradePreimageRequest, TradePreimageRpcError, TradePreimageRpcResult};
 use super::{broadcast_my_swap_status, broadcast_swap_message_every, check_other_coin_balance_for_swap,
             dex_fee_amount_from_taker_coin, dex_fee_rate, dex_fee_threshold, get_locked_amount, my_swap_file_path,
-            my_swaps_dir, recv_swap_msg, swap_topic, AtomicSwap, LockedAmount, MySwapInfo, NegotiationDataMsg,
-            NegotiationDataV2, RecoveredSwap, RecoveredSwapAction, SavedSwap, SavedTradeFee,
-            SwapConfirmationsSettings, SwapError, SwapMsg, SwapsContext, TransactionIdentifier, WAIT_CONFIRM_INTERVAL};
+            recv_swap_msg, swap_topic, AtomicSwap, LockedAmount, MySwapInfo, NegotiationDataMsg, NegotiationDataV2,
+            RecoveredSwap, RecoveredSwapAction, SavedSwap, SavedTradeFee, SwapConfirmationsSettings, SwapError,
+            SwapMsg, SwapsContext, TransactionIdentifier, WAIT_CONFIRM_INTERVAL};
 use crate::mm2::lp_network::subscribe_to_topic;
 use crate::mm2::lp_ordermatch::{MatchBy, OrderConfirmationsSettings, TakerAction, TakerOrderBuilder};
 use crate::mm2::MM_VERSION;
@@ -19,7 +19,7 @@ use common::log::{debug, error, warn};
 use common::mm_ctx::MmArc;
 use common::mm_error::prelude::*;
 use common::mm_number::MmNumber;
-use common::{bits256, file_lock::FileLock, now_ms, slurp, write, DEX_FEE_ADDR_RAW_PUBKEY};
+use common::{bits256, now_ms, slurp, write, DEX_FEE_ADDR_RAW_PUBKEY};
 use futures::{compat::Future01CompatExt, select, FutureExt};
 use futures01::Future;
 use http::Response;
@@ -365,7 +365,7 @@ pub async fn run_taker_swap(swap: RunTakerSwapInput, ctx: MmArc) {
                         )
                     }
                     status.status(&[&"swap", &("uuid", uuid.as_str())], &event.status_str());
-                    running_swap.apply_event(event).expect("!apply_event");
+                    running_swap.apply_event(event);
                 }
                 match res.0 {
                     Some(c) => {
@@ -383,10 +383,11 @@ pub async fn run_taker_swap(swap: RunTakerSwapInput, ctx: MmArc) {
         .fuse(),
     );
     let mut shutdown_fut = Box::pin(shutdown_rx.recv().fuse());
+    let do_nothing = (); // to fix https://rust-lang.github.io/rust-clippy/master/index.html#unused_unit
     select! {
-        swap = swap_fut => (), // swap finished normally
-        shutdown = shutdown_fut => log!("on_stop] swap " (swap_for_log.uuid) " stopped!"),
-        touch = touch_loop => unreachable!("Touch loop can not stop!"),
+        _swap = swap_fut => do_nothing, // swap finished normally
+        _shutdown = shutdown_fut => log!("on_stop] swap " (swap_for_log.uuid) " stopped!"),
+        _touch = touch_loop => unreachable!("Touch loop can not stop!"),
     };
 }
 
@@ -582,7 +583,7 @@ impl TakerSwap {
 
     fn wait_refund_until(&self) -> u64 { self.r().data.taker_payment_lock + 3700 }
 
-    fn apply_event(&self, event: TakerSwapEvent) -> Result<(), String> {
+    fn apply_event(&self, event: TakerSwapEvent) {
         match event {
             TakerSwapEvent::Started(data) => self.w().data = data,
             TakerSwapEvent::StartFailed(err) => self.errors.lock().push(err),
@@ -626,7 +627,6 @@ impl TakerSwap {
             TakerSwapEvent::TakerPaymentRefundFailed(err) => self.errors.lock().push(err),
             TakerSwapEvent::Finished => self.finished_at.store(now_ms() / 1000, Ordering::Relaxed),
         }
-        Ok(())
     }
 
     async fn handle_command(
@@ -1303,7 +1303,7 @@ impl TakerSwap {
         );
         let command = saved.events.last().unwrap().get_command();
         for saved_event in saved.events {
-            try_s!(swap.apply_event(saved_event.event));
+            swap.apply_event(saved_event.event);
         }
         Ok((swap, command))
     }

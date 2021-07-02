@@ -16,6 +16,7 @@ pub enum SwapLockError {
     ErrorReadingTimestamp(String),
     #[display(fmt = "Error writing timestamp: {}", _0)]
     ErrorWritingTimestamp(String),
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     #[display(fmt = "Internal error: {}", _0)]
     InternalError(String),
 }

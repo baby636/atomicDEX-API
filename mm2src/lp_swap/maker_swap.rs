@@ -4,8 +4,8 @@ use super::pubkey_banning::ban_pubkey_on_failed_swap;
 use super::swap_lock::{SwapLock, SwapLockOps};
 use super::trade_preimage::{TradePreimageRequest, TradePreimageRpcError, TradePreimageRpcResult};
 use super::{broadcast_my_swap_status, broadcast_swap_message_every, check_other_coin_balance_for_swap,
-            dex_fee_amount_from_taker_coin, get_locked_amount, my_swap_file_path, my_swaps_dir, recv_swap_msg,
-            swap_topic, AtomicSwap, LockedAmount, MySwapInfo, NegotiationDataMsg, NegotiationDataV2, RecoveredSwap,
+            dex_fee_amount_from_taker_coin, get_locked_amount, my_swap_file_path, recv_swap_msg, swap_topic,
+            AtomicSwap, LockedAmount, MySwapInfo, NegotiationDataMsg, NegotiationDataV2, RecoveredSwap,
             RecoveredSwapAction, SavedSwap, SavedTradeFee, SwapConfirmationsSettings, SwapError, SwapMsg,
             SwapsContext, TransactionIdentifier, WAIT_CONFIRM_INTERVAL};
 
@@ -18,7 +18,7 @@ use bitcrypto::dhash160;
 use coins::{CanRefundHtlc, FeeApproxStage, FoundSwapTxSpend, MmCoinEnum, TradeFee, TradePreimageValue, TransactionEnum};
 use common::log::{error, warn};
 use common::mm_error::prelude::*;
-use common::{bits256, executor::Timer, file_lock::FileLock, mm_ctx::MmArc, mm_number::MmNumber, now_ms, slurp, write,
+use common::{bits256, executor::Timer, mm_ctx::MmArc, mm_number::MmNumber, now_ms, slurp, write,
              DEX_FEE_ADDR_RAW_PUBKEY};
 use futures::{compat::Future01CompatExt, select, FutureExt};
 use futures01::Future;
@@ -139,6 +139,7 @@ pub struct MakerSwapData {
 pub struct MakerSwapMut {
     data: MakerSwapData,
     other_persistent_pub: H264,
+    #[allow(dead_code)]
     taker_fee: Option<TransactionIdentifier>,
     maker_payment: Option<TransactionIdentifier>,
     taker_payment: Option<TransactionIdentifier>,
@@ -169,15 +170,6 @@ impl MakerSwap {
     fn w(&self) -> RwLockWriteGuard<MakerSwapMut> { self.mutable.write().unwrap() }
     fn r(&self) -> RwLockReadGuard<MakerSwapMut> { self.mutable.read().unwrap() }
 
-    #[cfg(target_arch = "wasm32")]
-    fn generate_secret(&self) -> [u8; 32] {
-        // TODO small rng uses now_ms() as seed which is completely insecure to generate the secret
-        // for swap, we must consider refactoring
-        let mut rng = common::small_rng();
-        rng.gen()
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
     fn generate_secret(&self) -> [u8; 32] {
         let mut rng = rand::thread_rng();
         rng.gen()
@@ -185,7 +177,7 @@ impl MakerSwap {
 
     fn wait_refund_until(&self) -> u64 { self.r().data.maker_payment_lock + 3700 }
 
-    fn apply_event(&self, event: MakerSwapEvent) -> Result<(), String> {
+    fn apply_event(&self, event: MakerSwapEvent) {
         match event {
             MakerSwapEvent::Started(data) => self.w().data = data,
             MakerSwapEvent::StartFailed(err) => self.errors.lock().push(err),
@@ -225,7 +217,6 @@ impl MakerSwap {
             MakerSwapEvent::MakerPaymentRefundFailed(err) => self.errors.lock().push(err),
             MakerSwapEvent::Finished => self.finished_at.store(now_ms() / 1000, Ordering::Relaxed),
         }
-        Ok(())
     }
 
     async fn handle_command(
@@ -796,7 +787,7 @@ impl MakerSwap {
 
     async fn confirm_taker_payment_spend(&self) -> Result<(Option<MakerSwapCommand>, Vec<MakerSwapEvent>), String> {
         // we should wait for only one confirmation to make sure our spend transaction is not failed
-        let confirmations = 1;
+        let confirmations = std::cmp::min(1, self.r().data.taker_payment_confirmations);
         let requires_nota = false;
         let wait_fut = self.taker_coin.wait_for_confirmations(
             &self.r().taker_payment_spend.clone().unwrap().tx_hex,
@@ -930,7 +921,7 @@ impl MakerSwap {
         );
         let command = saved.events.last().unwrap().get_command();
         for saved_event in saved.events {
-            try_s!(swap.apply_event(saved_event.event));
+            swap.apply_event(saved_event.event);
         }
         Ok((swap, command))
     }
@@ -1497,7 +1488,7 @@ pub async fn run_maker_swap(swap: RunMakerSwapInput, ctx: MmArc) {
                         )
                     }
                     status.status(swap_tags!(), &event.status_str());
-                    running_swap.apply_event(event).expect("!apply_event");
+                    running_swap.apply_event(event);
                 }
                 match res.0 {
                     Some(c) => {
@@ -1515,10 +1506,11 @@ pub async fn run_maker_swap(swap: RunMakerSwapInput, ctx: MmArc) {
         .fuse(),
     );
     let mut shutdown_fut = Box::pin(shutdown_rx.recv().fuse());
+    let do_nothing = (); // to fix https://rust-lang.github.io/rust-clippy/master/index.html#unused_unit
     select! {
-        swap = swap_fut => (), // swap finished normally
-        shutdown = shutdown_fut => log!("on_stop] swap " (swap_for_log.uuid) " stopped!"),
-        touch = touch_loop => unreachable!("Touch loop can not stop!"),
+        _swap = swap_fut => do_nothing, // swap finished normally
+        _shutdown = shutdown_fut => log!("on_stop] swap " (swap_for_log.uuid) " stopped!"),
+        _touch = touch_loop => unreachable!("Touch loop can not stop!"),
     };
 }
 
