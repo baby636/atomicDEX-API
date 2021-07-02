@@ -109,8 +109,7 @@ cfg_native! {
 }
 
 cfg_wasm32! {
-    use futures::lock::{Mutex as AsyncMutex};
-    use common::indexed_db::{get_or_initialize_db, DbLocked};
+    use common::indexed_db::{get_or_initialize_db, DbLocked, DbNamespaceId};
     use tx_history_db::TxHistoryDb;
 
     pub type TxHistoryDbLocked<'a> = DbLocked<'a, TxHistoryDb>;
@@ -938,6 +937,8 @@ struct CoinsContext {
     coins: AsyncMutex<HashMap<String, MmCoinEnum>>,
     balance_update_handlers: AsyncMutex<Vec<Box<dyn BalanceTradeFeeUpdatedHandler + Send + Sync>>>,
     #[cfg(target_arch = "wasm32")]
+    db_namespace: DbNamespaceId,
+    #[cfg(target_arch = "wasm32")]
     /// The database has to be initialized only once!
     /// It's better to use something like [`Constructible`], but it doesn't provide a method to get the inner value by the mutable reference.
     tx_history_db: AsyncMutex<Option<TxHistoryDb>>,
@@ -951,13 +952,15 @@ impl CoinsContext {
                 balance_update_handlers: AsyncMutex::new(vec![]),
                 #[cfg(target_arch = "wasm32")]
                 tx_history_db: AsyncMutex::new(None),
+                #[cfg(target_arch = "wasm32")]
+                db_namespace: ctx.db_namespace,
             })
         })))
     }
 
     #[cfg(target_arch = "wasm32")]
     async fn tx_history_db(&self) -> TxHistoryResult<TxHistoryDbLocked<'_>> {
-        Ok(get_or_initialize_db(&self.tx_history_db).await?)
+        Ok(get_or_initialize_db(&self.tx_history_db, self.db_namespace).await?)
     }
 }
 

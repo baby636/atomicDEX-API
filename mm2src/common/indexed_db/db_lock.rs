@@ -1,11 +1,18 @@
-use super::{InitDbResult, InitializeDb};
+use super::{DbIdentifier, DbInstance, DbNamespaceId, InitDbResult};
 use futures::lock::{MappedMutexGuard as AsyncMappedMutexGuard, Mutex as AsyncMutex, MutexGuard as AsyncMutexGuard};
 
+/// The mapped mutex guard.
+/// This implements `Deref<Db>`.
 pub type DbLocked<'a, Db> = AsyncMappedMutexGuard<'a, Option<Db>, Db>;
 
-pub async fn get_or_initialize_db<Db>(mutex: &AsyncMutex<Option<Db>>) -> InitDbResult<DbLocked<'_, Db>>
+/// Locks the given mutex and checks if the inner database is initialized already or not,
+/// initializes it if it's required, and returns the locked instance.
+pub async fn get_or_initialize_db<Db>(
+    mutex: &AsyncMutex<Option<Db>>,
+    namespace_id: DbNamespaceId,
+) -> InitDbResult<DbLocked<'_, Db>>
 where
-    Db: InitializeDb,
+    Db: DbInstance,
 {
     let mut locked_db = mutex.lock().await;
     // Db is initialized already
@@ -13,7 +20,9 @@ where
         return Ok(unwrap_tx_history_db(locked_db));
     }
 
-    let db = Db::init().await?;
+    let db_id = DbIdentifier::with_namespace::<Db>(namespace_id);
+
+    let db = Db::init(db_id).await?;
     *locked_db = Some(db);
     Ok(unwrap_tx_history_db(locked_db))
 }

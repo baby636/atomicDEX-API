@@ -11,8 +11,10 @@ use crate::executor::spawn_local;
 use crate::log::debug;
 use crate::mm_error::prelude::*;
 use async_trait::async_trait;
+use derive_more::Display;
 use futures::channel::{mpsc, oneshot};
 use futures::StreamExt;
+use rand::{thread_rng, Rng};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::{self as json, Value as Json};
@@ -33,6 +35,59 @@ type DbEventTx = mpsc::UnboundedSender<internal::DbEvent>;
 type DbTransactionEventTx = mpsc::UnboundedSender<internal::DbTransactionEvent>;
 type DbTableEventTx = mpsc::UnboundedSender<internal::DbTableEvent>;
 
+/// The database namespace identifier.
+/// This is used to distinguish the databases of one test from others.
+#[derive(Clone, Copy, Display, PartialEq)]
+pub enum DbNamespaceId {
+    #[display(fmt = "MAIN")]
+    Main,
+    #[display(fmt = "TEST_{}", _0)]
+    Test(u64),
+}
+
+impl Default for DbNamespaceId {
+    fn default() -> Self { DbNamespaceId::Main }
+}
+
+impl DbNamespaceId {
+    pub fn for_test() -> DbNamespaceId {
+        let mut rng = thread_rng();
+        DbNamespaceId::Test(rng.gen())
+    }
+}
+
+#[derive(Clone, Display)]
+#[display(fmt = "{}::{}", namespace_id, db_name)]
+pub struct DbIdentifier {
+    namespace_id: DbNamespaceId,
+    db_name: &'static str,
+}
+
+impl DbIdentifier {
+    pub fn db_name(&self) -> &'static str { self.db_name }
+
+    pub fn main_namespace<Db: DbInstance>() -> DbIdentifier {
+        DbIdentifier {
+            namespace_id: DbNamespaceId::Main,
+            db_name: Db::db_name(),
+        }
+    }
+
+    pub fn for_test(db_name: &'static str) -> DbIdentifier {
+        DbIdentifier {
+            namespace_id: DbNamespaceId::for_test(),
+            db_name,
+        }
+    }
+
+    fn with_namespace<Db: DbInstance>(namespace_id: DbNamespaceId) -> DbIdentifier {
+        DbIdentifier {
+            namespace_id,
+            db_name: Db::db_name(),
+        }
+    }
+}
+
 pub trait TableSignature: DeserializeOwned + Serialize + 'static {
     fn table_name() -> &'static str;
 
@@ -40,8 +95,10 @@ pub trait TableSignature: DeserializeOwned + Serialize + 'static {
 }
 
 #[async_trait]
-pub trait InitializeDb: Sized {
-    async fn init() -> InitDbResult<Self>;
+pub trait DbInstance: Sized {
+    fn db_name() -> &'static str;
+
+    async fn init(db_id: DbIdentifier) -> InitDbResult<Self>;
 }
 
 pub struct IndexedDbBuilder {
@@ -51,9 +108,9 @@ pub struct IndexedDbBuilder {
 }
 
 impl IndexedDbBuilder {
-    pub fn new(db_name: &str) -> IndexedDbBuilder {
+    pub fn new(db_id: DbIdentifier) -> IndexedDbBuilder {
         IndexedDbBuilder {
-            db_name: db_name.to_owned(),
+            db_name: db_id.to_string(),
             db_version: 1,
             tables: HashMap::new(),
         }
@@ -88,7 +145,7 @@ impl IndexedDbBuilder {
             let db = match IdbDatabaseBuilder::new(&self.db_name)
                 .with_version(self.db_version)
                 .with_tables(self.tables.into_iter())
-                .init()
+                .build()
                 .await
             {
                 Ok(db) => db,
@@ -503,7 +560,7 @@ mod tests {
 
         register_wasm_log(LogLevel::Debug);
 
-        let db = IndexedDbBuilder::new(DB_NAME)
+        let db = IndexedDbBuilder::new(DbIdentifier::for_test(DB_NAME))
             .with_version(DB_VERSION)
             .with_table::<TxTable>()
             .build()
@@ -577,7 +634,7 @@ mod tests {
 
         register_wasm_log(LogLevel::Debug);
 
-        let db = IndexedDbBuilder::new(DB_NAME)
+        let db = IndexedDbBuilder::new(DbIdentifier::for_test(DB_NAME))
             .with_version(DB_VERSION)
             .with_table::<TxTable>()
             .build()
@@ -660,7 +717,7 @@ mod tests {
 
         register_wasm_log(LogLevel::Debug);
 
-        let db = IndexedDbBuilder::new(DB_NAME)
+        let db = IndexedDbBuilder::new(DbIdentifier::for_test(DB_NAME))
             .with_version(DB_VERSION)
             .with_table::<TxTable>()
             .build()
@@ -702,7 +759,7 @@ mod tests {
 
         register_wasm_log(LogLevel::Debug);
 
-        let db = IndexedDbBuilder::new(DB_NAME)
+        let db = IndexedDbBuilder::new(DbIdentifier::for_test(DB_NAME))
             .with_version(DB_VERSION)
             .with_table::<TxTable>()
             .build()
@@ -764,12 +821,16 @@ mod tests {
             }
         }
 
-        async fn init_and_check(version: u32, expected_old_new_versions: Option<(u32, u32)>) -> Result<(), String> {
+        async fn init_and_check(
+            db_identifier: DbIdentifier,
+            version: u32,
+            expected_old_new_versions: Option<(u32, u32)>,
+        ) -> Result<(), String> {
             let mut versions = LAST_VERSIONS.lock().expect("!LAST_VERSIONS.lock()");
             *versions = None;
             drop(versions);
 
-            let _db = IndexedDbBuilder::new(DB_NAME)
+            let _db = IndexedDbBuilder::new(db_identifier)
                 .with_version(version)
                 .with_table::<UpgradableTable>()
                 .build()
@@ -789,10 +850,12 @@ mod tests {
 
         register_wasm_log(LogLevel::Debug);
 
-        init_and_check(1, Some((0, 1))).await.unwrap();
-        init_and_check(2, Some((1, 2))).await.unwrap();
+        let db_identifier = DbIdentifier::for_test(DB_NAME);
+
+        init_and_check(db_identifier.clone(), 1, Some((0, 1))).await.unwrap();
+        init_and_check(db_identifier.clone(), 2, Some((1, 2))).await.unwrap();
         // the same 2 version, `on_upgrade_needed` must not be called
-        init_and_check(2, None).await.unwrap();
+        init_and_check(db_identifier, 2, None).await.unwrap();
     }
 
     #[wasm_bindgen_test]
@@ -801,15 +864,16 @@ mod tests {
         const DB_VERSION: u32 = 1;
 
         register_wasm_log(LogLevel::Debug);
+        let db_identifier = DbIdentifier::for_test(DB_NAME);
 
-        let _db = IndexedDbBuilder::new(DB_NAME)
+        let _db = IndexedDbBuilder::new(db_identifier.clone())
             .with_version(DB_VERSION)
             .with_table::<TxTable>()
             .build()
             .await
             .expect("!IndexedDb::init first time");
 
-        match IndexedDbBuilder::new(DB_NAME)
+        match IndexedDbBuilder::new(db_identifier.clone())
             .with_version(DB_VERSION + 1)
             .with_table::<TxTable>()
             .build()
@@ -817,7 +881,7 @@ mod tests {
         {
             Ok(_) => panic!("!IndexedDb::init should have failed"),
             Err(e) => assert_eq!(e.into_inner(), InitDbError::DbIsOpenAlready {
-                db_name: DB_NAME.to_owned()
+                db_name: db_identifier.to_string()
             }),
         }
     }
@@ -828,8 +892,9 @@ mod tests {
         const DB_VERSION: u32 = 1;
 
         register_wasm_log(LogLevel::Debug);
+        let db_identifier = DbIdentifier::for_test(DB_NAME);
 
-        let db = IndexedDbBuilder::new(DB_NAME)
+        let db = IndexedDbBuilder::new(db_identifier.clone())
             .with_version(DB_VERSION)
             .with_table::<TxTable>()
             .build()
@@ -837,7 +902,7 @@ mod tests {
             .expect("!IndexedDb::init first time");
         drop(db);
 
-        let _db = IndexedDbBuilder::new(DB_NAME)
+        let _db = IndexedDbBuilder::new(db_identifier)
             .with_version(DB_VERSION)
             .with_table::<TxTable>()
             .build()
@@ -888,7 +953,7 @@ mod tests {
             some_data: "Some data 2".to_owned(),
         };
 
-        let db = IndexedDbBuilder::new(DB_NAME)
+        let db = IndexedDbBuilder::new(DbIdentifier::for_test(DB_NAME))
             .with_version(DB_VERSION)
             .with_table::<SwapTable>()
             .build()

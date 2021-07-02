@@ -1,7 +1,7 @@
 use crate::{TransactionDetails, TxHistoryError, TxHistoryResult};
 use async_trait::async_trait;
-use common::indexed_db::{DbTransactionError, DbUpgrader, IndexedDb, IndexedDbBuilder, InitDbError, InitDbResult,
-                         InitializeDb, OnUpgradeResult, TableSignature};
+use common::indexed_db::{DbIdentifier, DbInstance, DbTransactionError, DbUpgrader, IndexedDb, IndexedDbBuilder,
+                         InitDbError, InitDbResult, OnUpgradeResult, TableSignature};
 use common::mm_error::prelude::*;
 
 const DB_NAME: &str = "tx_history";
@@ -47,9 +47,11 @@ pub struct TxHistoryDb {
 }
 
 #[async_trait]
-impl InitializeDb for TxHistoryDb {
-    async fn init() -> InitDbResult<Self> {
-        let inner = IndexedDbBuilder::new(DB_NAME)
+impl DbInstance for TxHistoryDb {
+    fn db_name() -> &'static str { DB_NAME }
+
+    async fn init(db_id: DbIdentifier) -> InitDbResult<Self> {
+        let inner = IndexedDbBuilder::new(db_id)
             .with_version(DB_VERSION)
             .with_table::<TxHistoryTable>()
             .build()
@@ -190,7 +192,10 @@ mod tests {
 
     #[wasm_bindgen_test]
     async fn test_tx_history() {
-        let db = TxHistoryDb::init().await.expect("!TxHistoryDb::init_with_fs_path");
+        const DB_NAME: &'static str = "TEST_TX_HISTORY";
+        let db = TxHistoryDb::init(DbIdentifier::for_test(DB_NAME))
+            .await
+            .expect("!TxHistoryDb::init_with_fs_path");
 
         let history = db
             .load_history("RICK", "RRnMcSeKiLrNdbp91qNVQwwXx5azD4S4CD")

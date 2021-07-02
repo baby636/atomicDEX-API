@@ -6,7 +6,7 @@
 //! Since the wrappers represented below are not `Send`, it's strongly recommended NOT to use them directly.
 //! Please consider using a higher-level interface from `indexed_db.rs`.
 
-use crate::log::error;
+use crate::log::{debug, error};
 use crate::mm_error::prelude::*;
 use crate::stringify_js_error;
 use derive_more::Display;
@@ -41,7 +41,7 @@ pub(super) type OnUpgradeNeededCb = Box<dyn FnOnce(&DbUpgrader, u32, u32) -> OnU
 pub enum InitDbError {
     #[display(fmt = "Cannot initialize a Database without tables")]
     EmptyTableList,
-    #[display(fmt = "Database {} is open already", db_name)]
+    #[display(fmt = "Database '{}' is open already", db_name)]
     DbIsOpenAlready { db_name: String },
     #[display(fmt = "It seems this browser doesn't support 'IndexedDb': {}", _0)]
     NotSupported(String),
@@ -138,9 +138,10 @@ impl IdbDatabaseBuilder {
         self
     }
 
-    pub async fn init(self) -> InitDbResult<IdbDatabaseImpl> {
+    pub async fn build(self) -> InitDbResult<IdbDatabaseImpl> {
         Self::check_if_db_is_not_open(&self.db_name)?;
         let (table_names, on_upgrade_needed_handlers) = Self::tables_into_parts(self.tables)?;
+        debug!("Open '{}' database with tables: {:?}", self.db_name, table_names);
 
         let window = web_sys::window().expect("!window");
         let indexed_db = match window.indexed_db() {
