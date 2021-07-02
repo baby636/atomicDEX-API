@@ -109,7 +109,7 @@ cfg_native! {
 }
 
 cfg_wasm32! {
-    use common::indexed_db::{get_or_initialize_db, DbLocked, DbNamespaceId};
+    use common::indexed_db::{get_or_initialize_db, ConstructibleDb, DbLocked, DbNamespaceId};
     use tx_history_db::TxHistoryDb;
 
     pub type TxHistoryDbLocked<'a> = DbLocked<'a, TxHistoryDb>;
@@ -940,8 +940,7 @@ struct CoinsContext {
     db_namespace: DbNamespaceId,
     #[cfg(target_arch = "wasm32")]
     /// The database has to be initialized only once!
-    /// It's better to use something like [`Constructible`], but it doesn't provide a method to get the inner value by the mutable reference.
-    tx_history_db: AsyncMutex<Option<TxHistoryDb>>,
+    tx_history_db: ConstructibleDb<TxHistoryDb>,
 }
 impl CoinsContext {
     /// Obtains a reference to this crate context, creating it if necessary.

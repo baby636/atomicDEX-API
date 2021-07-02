@@ -4,11 +4,13 @@ use futures::lock::{MappedMutexGuard as AsyncMappedMutexGuard, Mutex as AsyncMut
 /// The mapped mutex guard.
 /// This implements `Deref<Db>`.
 pub type DbLocked<'a, Db> = AsyncMappedMutexGuard<'a, Option<Db>, Db>;
+/// It's better to use something like [`Constructible`], but it doesn't provide a method to get the inner value by the mutable reference.
+pub type ConstructibleDb<Db> = AsyncMutex<Option<Db>>;
 
 /// Locks the given mutex and checks if the inner database is initialized already or not,
 /// initializes it if it's required, and returns the locked instance.
 pub async fn get_or_initialize_db<Db>(
-    mutex: &AsyncMutex<Option<Db>>,
+    mutex: &ConstructibleDb<Db>,
     namespace_id: DbNamespaceId,
 ) -> InitDbResult<DbLocked<'_, Db>>
 where

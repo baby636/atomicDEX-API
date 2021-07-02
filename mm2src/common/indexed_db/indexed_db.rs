@@ -27,7 +27,7 @@ mod db_lock;
 
 pub use db_driver::{DbTransactionError, DbTransactionResult, DbUpgrader, InitDbError, InitDbResult, ItemId,
                     OnUpgradeResult};
-pub use db_lock::{get_or_initialize_db, DbLocked};
+pub use db_lock::{get_or_initialize_db, ConstructibleDb, DbLocked};
 
 use db_driver::{IdbDatabaseBuilder, IdbDatabaseImpl, IdbObjectStoreImpl, IdbTransactionImpl, OnUpgradeNeededCb};
 
