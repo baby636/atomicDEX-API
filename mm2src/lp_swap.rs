@@ -95,9 +95,7 @@ use uuid::Uuid;
 #[cfg(target_arch = "wasm32")]
 #[path = "lp_swap/swap_db.rs"]
 mod swap_db;
-#[cfg(target_arch = "wasm32")]
-#[path = "lp_swap/swap_lock.rs"]
-mod swap_lock;
+#[path = "lp_swap/swap_lock.rs"] mod swap_lock;
 
 pub use check_balance::check_other_coin_balance_for_swap;
 pub use maker_swap::{calc_max_maker_vol, check_balance_for_maker_swap, maker_swap_trade_preimage, run_maker_swap,

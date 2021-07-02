@@ -1,6 +1,7 @@
 use super::check_balance::{check_base_coin_balance_for_swap, check_my_coin_balance_for_swap, CheckBalanceError,
                            CheckBalanceResult};
 use super::pubkey_banning::ban_pubkey_on_failed_swap;
+use super::swap_lock::{SwapLock, SwapLockOps};
 use super::trade_preimage::{TradePreimageRequest, TradePreimageRpcError, TradePreimageRpcResult};
 use super::{broadcast_my_swap_status, broadcast_swap_message_every, check_other_coin_balance_for_swap,
             dex_fee_amount_from_taker_coin, get_locked_amount, my_swap_file_path, my_swaps_dir, recv_swap_msg,
@@ -15,9 +16,10 @@ use atomic::Atomic;
 use bigdecimal::BigDecimal;
 use bitcrypto::dhash160;
 use coins::{CanRefundHtlc, FeeApproxStage, FoundSwapTxSpend, MmCoinEnum, TradeFee, TradePreimageValue, TransactionEnum};
+use common::log::{error, warn};
 use common::mm_error::prelude::*;
-use common::{bits256, executor::Timer, file_lock::FileLock, log::error, mm_ctx::MmArc, mm_number::MmNumber, now_ms,
-             slurp, write, DEX_FEE_ADDR_RAW_PUBKEY};
+use common::{bits256, executor::Timer, file_lock::FileLock, mm_ctx::MmArc, mm_number::MmNumber, now_ms, slurp, write,
+             DEX_FEE_ADDR_RAW_PUBKEY};
 use futures::{compat::Future01CompatExt, select, FutureExt};
 use futures01::Future;
 use parking_lot::Mutex as PaMutex;
@@ -1397,14 +1399,16 @@ impl RunMakerSwapInput {
 /// Every produced event is saved to local DB. Swap status is broadcasted to P2P network after completion.
 pub async fn run_maker_swap(swap: RunMakerSwapInput, ctx: MmArc) {
     let uuid = swap.uuid().to_owned();
-    let lock_path = my_swaps_dir(&ctx).join(fomat!((uuid) ".lock"));
     let mut attempts = 0;
-    let file_lock = loop {
-        match FileLock::lock(&lock_path, 40.) {
+    let swap_lock = loop {
+        match SwapLock::lock(&ctx, uuid, 40.).await {
             Ok(Some(l)) => break l,
             Ok(None) => {
                 if attempts >= 1 {
-                    log!("Swap " (uuid) " file lock is acquired by another process/thread, aborting");
+                    warn!(
+                        "Swap {} file lock is acquired by another process/thread, aborting",
+                        uuid
+                    );
                     return;
                 } else {
                     attempts += 1;
@@ -1412,7 +1416,7 @@ pub async fn run_maker_swap(swap: RunMakerSwapInput, ctx: MmArc) {
                 }
             },
             Err(e) => {
-                log!("Swap " (uuid) " file lock error " (e));
+                error!("Swap {} file lock error: {}", uuid, e);
                 return;
             },
         };
@@ -1445,9 +1449,9 @@ pub async fn run_maker_swap(swap: RunMakerSwapInput, ctx: MmArc) {
     let mut touch_loop = Box::pin(
         async move {
             loop {
-                match file_lock.touch() {
+                match swap_lock.touch().await {
                     Ok(_) => (),
-                    Err(e) => log!("Warning, touch error " (e) " for swap " (uuid)),
+                    Err(e) => warn!("Swap {} file lock error: {}", uuid, e),
                 };
                 Timer::sleep(30.).await;
             }

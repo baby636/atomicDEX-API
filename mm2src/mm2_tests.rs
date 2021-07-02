@@ -6888,7 +6888,8 @@ mod wasm_bindgen_tests {
 
     wasm_bindgen_test_configure!(run_in_browser);
 
-    #[wasm_bindgen_test]
+    // TODO uncomment it, when the P2P supports in-memory transport
+    // #[wasm_bindgen_test]
     async fn test_swap() {
         use crate::mm2::lp_swap::{run_maker_swap, run_taker_swap, MakerSwap, RunMakerSwapInput, RunTakerSwapInput,
                                   SwapConfirmationsSettings, TakerSwap, PAYMENT_LOCKTIME};
@@ -6920,10 +6921,12 @@ mod wasm_bindgen_tests {
         let ctx_taker = MmCtxBuilder::new()
             .with_conf(conf.clone())
             .with_secp256k1_key_pair(key_pair_taker)
+            .with_test_db_namespace()
             .into_mm_arc();
         let ctx_maker = MmCtxBuilder::new()
             .with_conf(conf)
             .with_secp256k1_key_pair(key_pair_maker)
+            .with_test_db_namespace()
             .into_mm_arc();
         let taker_persistent_pub = (**ctx_taker.secp256k1_key_pair().public()).into();
         let maker_persistent_pub = (**ctx_maker.secp256k1_key_pair().public()).into();

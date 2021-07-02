@@ -4,6 +4,10 @@ use common::mm_error::prelude::*;
 use derive_more::Display;
 use uuid::Uuid;
 
+#[cfg(not(target_arch = "wasm32"))]
+pub use native_lock::SwapLock;
+#[cfg(target_arch = "wasm32")] pub use wasm_lock::SwapLock;
+
 pub type SwapLockResult<T> = Result<T, MmError<SwapLockError>>;
 
 #[derive(Debug, Display)]
@@ -20,7 +24,7 @@ pub enum SwapLockError {
 pub trait SwapLockOps: Sized {
     async fn lock(ctx: &MmArc, swap_uuid: Uuid, ttl_sec: f64) -> SwapLockResult<Option<Self>>;
 
-    async fn touch(&mut self) -> SwapLockResult<()>;
+    async fn touch(&self) -> SwapLockResult<()>;
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -59,7 +63,7 @@ mod native_lock {
             Ok(Some(SwapLock { file_lock }))
         }
 
-        async fn touch(&mut self) -> SwapLockResult<()> { Ok(self.file_lock.touch()?) }
+        async fn touch(&self) -> SwapLockResult<()> { Ok(self.file_lock.touch()?) }
     }
 }
 
@@ -103,7 +107,6 @@ mod wasm_lock {
         swap_uuid: Uuid,
         /// The identifier of the timestamp record in the `SwapLockTable`.
         pub(super) record_id: ItemId,
-        pub(super) last_timestamp: u64,
     }
 
     impl Drop for SwapLock {
@@ -144,8 +147,10 @@ mod wasm_lock {
                 table.delete_item(item_id).await?;
             }
 
-            let timestamp = now_ms() / 1000;
-            let item = SwapLockTable { uuid, timestamp };
+            let item = SwapLockTable {
+                uuid,
+                timestamp: now_ms() / 1000,
+            };
             let record_id = table.add_item(&item).await?;
             transaction.wait_for_complete().await?;
 
@@ -153,20 +158,17 @@ mod wasm_lock {
                 ctx: ctx.clone(),
                 swap_uuid: uuid,
                 record_id,
-                last_timestamp: timestamp,
             }))
         }
 
-        async fn touch(&mut self) -> SwapLockResult<()> {
+        async fn touch(&self) -> SwapLockResult<()> {
             let swaps_ctx = SwapsContext::from_ctx(&self.ctx).map_to_mm(SwapLockError::InternalError)?;
             let db = swaps_ctx.swap_db().await?;
 
-            let timestamp = now_ms() / 1000;
             let item = SwapLockTable {
                 uuid: self.swap_uuid,
-                timestamp,
+                timestamp: now_ms() / 1000,
             };
-            self.last_timestamp = timestamp;
 
             let transaction = db.transaction().await?;
             let table = transaction.table::<SwapLockTable>().await?;
@@ -228,14 +230,14 @@ mod tests {
             .await
             .expect("!SwapLock::lock")
             .expect("SwapLock::lock must return a value");
-        assert!(started_at <= swap_lock.last_timestamp);
 
-        let actual = get_all_items(&ctx).await;
-        let expected = vec![(swap_lock.record_id, SwapLockTable {
-            uuid,
-            timestamp: swap_lock.last_timestamp,
-        })];
-        assert_eq!(actual, expected);
+        let items = get_all_items(&ctx).await;
+        assert_eq!(items.len(), 1);
+        let (record_id, lock_item) = items[0].clone();
+
+        assert_eq!(record_id, swap_lock.record_id);
+        assert_eq!(lock_item.uuid, uuid);
+        assert!(started_at <= lock_item.timestamp);
 
         drop(swap_lock);
 
@@ -268,25 +270,33 @@ mod tests {
         let uuid = new_uuid();
 
         let started_at = now_ms() / 1000;
-        let swap_lock = SwapLock::lock(&ctx, uuid, 1.)
+        let first_lock = SwapLock::lock(&ctx, uuid, 1.)
             .await
             .expect("!SwapLock::lock")
             .expect("SwapLock::lock must return a value");
-        assert!(started_at <= swap_lock.last_timestamp);
 
-        let actual = get_all_items(&ctx).await;
-        let expected = vec![(swap_lock.record_id, SwapLockTable {
-            uuid,
-            timestamp: swap_lock.last_timestamp,
-        })];
-        assert_eq!(actual, expected);
+        let items = get_all_items(&ctx).await;
+        assert_eq!(items.len(), 1);
+        let (first_record_id, first_lock_item) = items[0].clone();
+
+        assert_eq!(first_record_id, first_lock.record_id);
+        assert_eq!(first_lock_item.uuid, uuid);
+        assert!(started_at <= first_lock_item.timestamp);
 
         Timer::sleep(2.).await;
 
-        let new_lock = SwapLock::lock(&ctx, uuid, 1.)
+        let second_lock = SwapLock::lock(&ctx, uuid, 1.)
             .await
             .expect("!SwapLock::lock")
             .expect("SwapLock::lock must return a value after the last ttl is over");
-        assert!(swap_lock.last_timestamp < new_lock.last_timestamp);
+
+        let items = get_all_items(&ctx).await;
+        assert_eq!(items.len(), 1);
+        let (second_record_id, second_lock_item) = items[0].clone();
+
+        assert_eq!(second_record_id, second_lock.record_id);
+        assert_ne!(first_record_id, second_record_id);
+        assert_eq!(second_lock_item.uuid, uuid);
+        assert!(first_lock_item.timestamp < second_lock_item.timestamp);
     }
 }
