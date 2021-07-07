@@ -388,7 +388,7 @@ impl MarketMakerIt {
             }
             if let Some(ref mut pc) = self.pc {
                 if !pc.running() {
-                    return ERR!("MM process terminated prematurely.");
+                    return ERR!("MM process terminated prematurely at: {:?}.", self.folder);
                 }
             }
             Timer::sleep(ms as f64 / 1000.).await
