@@ -133,6 +133,7 @@ impl PeersExchange {
 
         for address in addresses.iter() {
             if !self.validate_global_multiaddr(address) {
+                warn!("Attempt adding a not valid address of the peer '{}': {}", peer, address);
                 return;
             }
         }
@@ -240,6 +241,7 @@ impl PeersExchange {
 
             for address in addresses {
                 if !self.validate_global_multiaddr(address) {
+                    warn!("Received a not valid address: {}", address);
                     return false;
                 }
             }
