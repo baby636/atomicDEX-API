@@ -664,8 +664,9 @@ fn start_gossipsub(
         let floodsub = Floodsub::new(local_peer_id, netid != NETID_7777);
 
         let mut peers_exchange = PeersExchange::new(network_info);
-        // Please note WASM nodes don't support `PeersExchange` currently.
         if !network_info.in_memory() {
+            // Please note WASM nodes don't support `PeersExchange` currently,
+            // so `get_all_network_seednodes` returns an empty list.
             for (peer_id, addr) in get_all_network_seednodes(netid) {
                 let multiaddr = addr.try_to_multiaddr(network_info)?;
                 peers_exchange.add_peer_addresses(&peer_id, iter::once(multiaddr).collect());

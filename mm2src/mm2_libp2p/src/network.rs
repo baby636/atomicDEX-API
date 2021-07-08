@@ -3,6 +3,7 @@ use libp2p::PeerId;
 
 pub const NETID_7777: u16 = 7777;
 
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 const ALL_NETID_7777_SEEDNODES: &[(&str, &str)] = &[
     (
         "12D3KooWEsuiKcQaBaKEzuMtT6uFjs89P1E8MK3wGRZbeuCbCw6P",
@@ -48,6 +49,10 @@ const ALL_NETID_7777_SEEDNODES: &[(&str, &str)] = &[
     ("12D3KooWAd5gPXwX7eDvKWwkr2FZGfoJceKDCA53SHmTFFVkrN7Q", "46.4.87.18"),
 ];
 
+#[cfg(target_arch = "wasm32")]
+pub fn get_all_network_seednodes(_netid: u16) -> Vec<(PeerId, RelayAddress)> { Vec::new() }
+
+#[cfg(not(target_arch = "wasm32"))]
 pub fn get_all_network_seednodes(netid: u16) -> Vec<(PeerId, RelayAddress)> {
     use std::str::FromStr;
 
