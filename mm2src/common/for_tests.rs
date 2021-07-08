@@ -274,7 +274,10 @@ impl MarketMakerIt {
 
         #[cfg(target_arch = "wasm32")]
         {
-            let ctx = crate::mm_ctx::MmCtxBuilder::new().with_conf(conf).into_mm_arc();
+            let ctx = crate::mm_ctx::MmCtxBuilder::new()
+                .with_conf(conf)
+                .with_test_db_namespace()
+                .into_mm_arc();
             let local = try_s!(local.ok_or("!local"));
             local(ctx.clone());
             Ok(MarketMakerIt { ctx, ip, userpass })

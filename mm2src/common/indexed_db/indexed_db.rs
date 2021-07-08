@@ -4,7 +4,7 @@
 //! # Implementation
 //!
 //! Since the wrappers represented in `db_driver.rs` are not `Send`,
-//! the implementation below spawns initializes and spawns an `IdbDatabaseImpl` database instance locally
+//! the implementation below initializes and spawns a `IdbDatabaseImpl` database instance locally
 //! and communicate with it through the `mpsc` channel.
 
 use crate::executor::spawn_local;
