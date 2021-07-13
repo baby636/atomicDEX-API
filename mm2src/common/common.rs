@@ -1143,6 +1143,12 @@ pub mod executor {
                 till_utc: now_float() + seconds,
             }
         }
+        pub fn sleep_ms(ms: u32) -> Timer {
+            let seconds = gstuff::duration_to_float(Duration::from_millis(ms as u64));
+            Timer {
+                till_utc: now_float() + seconds,
+            }
+        }
         pub fn till_utc(&self) -> f64 { self.till_utc }
     }
 
