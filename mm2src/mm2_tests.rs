@@ -77,7 +77,7 @@ async fn enable_coins_eth_electrum(
     replies.insert("RICK", enable_electrum_json(mm, "RICK", false, rick_electrums()).await);
     replies.insert(
         "MORTY",
-        enable_electrum_json(mm, "MORTY", false, rick_electrums()).await,
+        enable_electrum_json(mm, "MORTY", false, morty_electrums()).await,
     );
     replies.insert("ETH", enable_native(mm, "ETH", eth_urls).await);
     replies.insert("JST", enable_native(mm, "JST", eth_urls).await);
