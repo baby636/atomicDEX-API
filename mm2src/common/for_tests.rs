@@ -840,13 +840,9 @@ pub fn from_env_file(env: Vec<u8>) -> (Option<String>, Option<String>) {
 #[macro_export]
 #[cfg(target_arch = "wasm32")]
 macro_rules! get_passphrase {
-    ($env_file:literal, $_env:literal) => {{
-        let content = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/", $env_file)).to_vec();
-        match from_env_file(content) {
-            (Some(file_passphrase), _file_userpass) => Ok(file_passphrase),
-            _ => ERR!("Error extracting a passphrase from '{}'", $env_file),
-        }
-    }};
+    ($_env_file:literal, $env:literal) => {
+        option_env!($env).ok_or_else(|| ERRL!("No such '{}' environment variable", $env))
+    };
 }
 
 #[macro_export]
