@@ -113,7 +113,7 @@ pub use trade_preimage::trade_preimage_rpc;
 pub const SWAP_PREFIX: TopicPrefix = "swap";
 
 cfg_wasm32! {
-    use common::indexed_db::{get_or_initialize_db, ConstructibleDb, DbLocked, DbNamespaceId};
+    use common::indexed_db::{ConstructibleDb, DbLocked, DbNamespaceId};
     use futures::lock::Mutex as AsyncMutex;
     use swap_db::{InitDbResult, SwapDb};
 
@@ -316,9 +316,6 @@ struct SwapsContext {
     shutdown_rx: async_std_sync::Receiver<()>,
     swap_msgs: Mutex<HashMap<Uuid, SwapMsgStore>>,
     #[cfg(target_arch = "wasm32")]
-    db_namespace: DbNamespaceId,
-    /// The database has to be initialized only once!
-    #[cfg(target_arch = "wasm32")]
     swap_db: ConstructibleDb<SwapDb>,
 }
 
@@ -346,9 +343,7 @@ impl SwapsContext {
                 shutdown_rx,
                 swap_msgs: Mutex::new(HashMap::new()),
                 #[cfg(target_arch = "wasm32")]
-                db_namespace: ctx.db_namespace,
-                #[cfg(target_arch = "wasm32")]
-                swap_db: AsyncMutex::new(None),
+                swap_db: ConstructibleDb::from_ctx(ctx),
             })
         })))
     }
@@ -359,9 +354,7 @@ impl SwapsContext {
     }
 
     #[cfg(target_arch = "wasm32")]
-    pub async fn swap_db(&self) -> InitDbResult<SwapDbLocked<'_>> {
-        Ok(get_or_initialize_db(&self.swap_db, self.db_namespace).await?)
-    }
+    pub async fn swap_db(&self) -> InitDbResult<SwapDbLocked<'_>> { Ok(self.swap_db.get_or_initialize().await?) }
 }
 
 /// Get total amount of selected coin locked by all currently ongoing swaps

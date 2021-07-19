@@ -14,6 +14,7 @@ use async_trait::async_trait;
 use derive_more::Display;
 use futures::channel::{mpsc, oneshot};
 use futures::StreamExt;
+use primitives::hash::H160;
 use rand::{thread_rng, Rng};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -27,7 +28,7 @@ mod db_lock;
 
 pub use db_driver::{DbTransactionError, DbTransactionResult, DbUpgrader, InitDbError, InitDbResult, ItemId,
                     OnUpgradeError, OnUpgradeResult};
-pub use db_lock::{get_or_initialize_db, ConstructibleDb, DbLocked};
+pub use db_lock::{ConstructibleDb, DbLocked};
 
 use db_driver::{IdbDatabaseBuilder, IdbDatabaseImpl, IdbObjectStoreImpl, IdbTransactionImpl, OnUpgradeNeededCb};
 
@@ -57,18 +58,22 @@ impl DbNamespaceId {
 }
 
 #[derive(Clone, Display)]
-#[display(fmt = "{}::{}", namespace_id, db_name)]
+#[display(fmt = "{}::{}::{}", namespace_id, "self.display_rmd160()", db_name)]
 pub struct DbIdentifier {
     namespace_id: DbNamespaceId,
+    /// The `RIPEMD160(SHA256(x))` where x is secp256k1 pubkey derived from passphrase.
+    /// This value is used to distinguish different databases corresponding to user's different seed phrases.
+    wallet_rmd160: H160,
     db_name: &'static str,
 }
 
 impl DbIdentifier {
     pub fn db_name(&self) -> &'static str { self.db_name }
 
-    pub fn main_namespace<Db: DbInstance>() -> DbIdentifier {
+    pub fn new<Db: DbInstance>(namespace_id: DbNamespaceId, wallet_rmd160: H160) -> DbIdentifier {
         DbIdentifier {
-            namespace_id: DbNamespaceId::Main,
+            namespace_id,
+            wallet_rmd160,
             db_name: Db::db_name(),
         }
     }
@@ -76,16 +81,12 @@ impl DbIdentifier {
     pub fn for_test(db_name: &'static str) -> DbIdentifier {
         DbIdentifier {
             namespace_id: DbNamespaceId::for_test(),
+            wallet_rmd160: H160::default(),
             db_name,
         }
     }
 
-    fn with_namespace<Db: DbInstance>(namespace_id: DbNamespaceId) -> DbIdentifier {
-        DbIdentifier {
-            namespace_id,
-            db_name: Db::db_name(),
-        }
-    }
+    pub fn display_rmd160(&self) -> String { hex::encode(&*self.wallet_rmd160) }
 }
 
 pub trait TableSignature: DeserializeOwned + Serialize + 'static {
@@ -575,6 +576,10 @@ mod tests {
     use wasm_bindgen_test::*;
 
     wasm_bindgen_test_configure!(run_in_browser);
+
+    lazy_static! {
+        static ref DEFAULT_RMD_160: H160 = H160::default();
+    }
 
     #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
     #[serde(deny_unknown_fields)]

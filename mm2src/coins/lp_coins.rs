@@ -110,7 +110,7 @@ cfg_native! {
 }
 
 cfg_wasm32! {
-    use common::indexed_db::{get_or_initialize_db, ConstructibleDb, DbLocked, DbNamespaceId};
+    use common::indexed_db::{ConstructibleDb, DbLocked};
     use tx_history_db::TxHistoryDb;
 
     pub type TxHistoryDbLocked<'a> = DbLocked<'a, TxHistoryDb>;
@@ -954,8 +954,6 @@ struct CoinsContext {
     coins: AsyncMutex<HashMap<String, MmCoinEnum>>,
     balance_update_handlers: AsyncMutex<Vec<Box<dyn BalanceTradeFeeUpdatedHandler + Send + Sync>>>,
     #[cfg(target_arch = "wasm32")]
-    db_namespace: DbNamespaceId,
-    #[cfg(target_arch = "wasm32")]
     /// The database has to be initialized only once!
     tx_history_db: ConstructibleDb<TxHistoryDb>,
 }
@@ -967,16 +965,14 @@ impl CoinsContext {
                 coins: AsyncMutex::new(HashMap::new()),
                 balance_update_handlers: AsyncMutex::new(vec![]),
                 #[cfg(target_arch = "wasm32")]
-                tx_history_db: AsyncMutex::new(None),
-                #[cfg(target_arch = "wasm32")]
-                db_namespace: ctx.db_namespace,
+                tx_history_db: ConstructibleDb::from_ctx(ctx),
             })
         })))
     }
 
     #[cfg(target_arch = "wasm32")]
     async fn tx_history_db(&self) -> TxHistoryResult<TxHistoryDbLocked<'_>> {
-        Ok(get_or_initialize_db(&self.tx_history_db, self.db_namespace).await?)
+        Ok(self.tx_history_db.get_or_initialize().await?)
     }
 }
 
