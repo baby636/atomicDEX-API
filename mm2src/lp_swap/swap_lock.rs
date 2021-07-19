@@ -85,6 +85,7 @@ mod wasm_lock {
                 | e @ DbTransactionError::ErrorOpeningTable { .. }
                 | e @ DbTransactionError::ErrorSerializingIndex { .. }
                 | e @ DbTransactionError::ErrorSerializingItem(_)
+                | e @ DbTransactionError::MultipleItemsByUniqueIndex { .. }
                 | e @ DbTransactionError::NoSuchIndex { .. }
                 | e @ DbTransactionError::InvalidIndex { .. }
                 | e @ DbTransactionError::UnexpectedState(_)
@@ -132,14 +133,9 @@ mod wasm_lock {
             let transaction = db.transaction().await?;
             let table = transaction.table::<SwapLockTable>().await?;
 
-            let items = table.get_items("uuid", uuid).await?;
-            if items.len() > 1 {
-                let error = format!("Expected only one record by the 'uuid' index, found {}", items.len());
-                return MmError::err(SwapLockError::InternalError(error));
-            }
-
-            let mut item_iter = items.into_iter();
-            if let Some((item_id, SwapLockTable { timestamp, .. })) = item_iter.next() {
+            if let Some((item_id, SwapLockTable { timestamp, .. })) =
+                table.get_item_by_unique_index("uuid", uuid).await?
+            {
                 let time_passed = now_float() - timestamp as f64;
                 if time_passed <= ttl_sec {
                     return Ok(None);

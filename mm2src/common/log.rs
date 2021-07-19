@@ -38,6 +38,7 @@ pub use wasm_log::{LogLevel, WasmCallback, WasmLoggerBuilder};
 mod native_log;
 #[cfg(not(target_arch = "wasm32"))]
 pub use native_log::{FfiCallback, LogLevel, UnifiedLoggerBuilder};
+use std::str::FromStr;
 
 lazy_static! {
     /// If this C callback is present then all the logging output should happen through it
@@ -918,6 +919,25 @@ impl Drop for LogState {
             }
         } else {
             log!("LogState] Bye!");
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct UnknownLogLevel(String);
+
+impl FromStr for LogLevel {
+    type Err = UnknownLogLevel;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "off" => Ok(LogLevel::Off),
+            "error" => Ok(LogLevel::Error),
+            "warn" => Ok(LogLevel::Warn),
+            "info" => Ok(LogLevel::Info),
+            "debug" => Ok(LogLevel::Debug),
+            "trace" => Ok(LogLevel::Trace),
+            _ => Err(UnknownLogLevel(s.to_owned())),
         }
     }
 }

@@ -373,7 +373,7 @@ pub async fn lp_init(ctx: MmArc) -> Result<(), String> {
     #[cfg(not(target_arch = "wasm32"))]
     {
         try_s!(ctx.init_sqlite_connection());
-        try_s!(init_and_migrate_db(&ctx, &ctx.sqlite_connection()));
+        try_s!(init_and_migrate_db(&ctx, &ctx.sqlite_connection()).await);
         try_s!(migrate_db(&ctx));
     }
 
@@ -388,7 +388,7 @@ pub async fn lp_init(ctx: MmArc) -> Result<(), String> {
     {
         // launch kickstart threads before RPC is available, this will prevent the API user to place
         // an order and start new swap that might get started 2 times because of kick-start
-        let mut coins_needed_for_kick_start = swap_kick_starts(ctx.clone());
+        let mut coins_needed_for_kick_start = try_s!(swap_kick_starts(ctx.clone()).await);
         coins_needed_for_kick_start.extend(try_s!(orders_kick_start(&ctx).await));
         *(try_s!(ctx.coins_needed_for_kick_start.lock())) = coins_needed_for_kick_start;
     }

@@ -2,7 +2,6 @@ use crate::{TransactionDetails, TxHistoryError, TxHistoryResult};
 use async_trait::async_trait;
 use common::indexed_db::{DbIdentifier, DbInstance, DbTransactionError, DbUpgrader, IndexedDb, IndexedDbBuilder,
                          InitDbError, InitDbResult, OnUpgradeResult, TableSignature};
-use common::mm_error::prelude::*;
 
 const DB_NAME: &str = "tx_history";
 const DB_VERSION: u32 = 1;
@@ -36,6 +35,7 @@ impl From<DbTransactionError> for TxHistoryError {
             | DbTransactionError::ErrorSerializingIndex { .. }
             | DbTransactionError::UnexpectedState(_)
             | DbTransactionError::TransactionAborted
+            | DbTransactionError::MultipleItemsByUniqueIndex { .. }
             | DbTransactionError::NoSuchIndex { .. }
             | DbTransactionError::InvalidIndex { .. } => TxHistoryError::InternalError(e.to_string()),
         }
@@ -67,17 +67,10 @@ impl TxHistoryDb {
         let transaction = self.inner.transaction().await?;
         let table = transaction.table::<TxHistoryTable>().await?;
 
-        let items = table.get_items("history_id", history_id.as_str()).await?;
-        if items.len() > 1 {
-            let error = format!(
-                "Expected only one item by the 'history_id' index, found {}",
-                items.len()
-            );
-            return MmError::err(TxHistoryError::InternalError(error));
-        }
-
-        let mut item_iter = items.into_iter();
-        match item_iter.next() {
+        let item_opt = table
+            .get_item_by_unique_index("history_id", history_id.as_str())
+            .await?;
+        match item_opt {
             Some((_item_id, TxHistoryTable { txs, .. })) => Ok(txs),
             None => Ok(Vec::new()),
         }
@@ -96,27 +89,9 @@ impl TxHistoryDb {
         let transaction = self.inner.transaction().await?;
         let table = transaction.table::<TxHistoryTable>().await?;
 
-        // First, check if the coin's tx history exists already.
-        let ids = table.get_item_ids("history_id", &history_id_value).await?;
-        match ids.len() {
-            // The history doesn't exist, add the new `tx_history_item`.
-            0 => {
-                table.add_item(&tx_history_item).await?;
-            },
-            // The history exists already, replace it with the actual `tx_history_item`.
-            1 => {
-                let item_id = ids[0];
-                table.replace_item(item_id, &tx_history_item).await?;
-            },
-            unexpected_len => {
-                let error = format!(
-                    "Expected only one item by the 'history_id' index, found {}",
-                    unexpected_len
-                );
-                return MmError::err(TxHistoryError::InternalError(error));
-            },
-        }
-
+        table
+            .replace_item_by_unique_index("history_id", &history_id_value, &tx_history_item)
+            .await?;
         transaction.wait_for_complete().await?;
         Ok(())
     }
@@ -127,24 +102,9 @@ impl TxHistoryDb {
         let transaction = self.inner.transaction().await?;
         let table = transaction.table::<TxHistoryTable>().await?;
 
-        // First, check if the coin's tx history exists.
-        let ids = table.get_item_ids("history_id", history_id.as_str()).await?;
-        match ids.len() {
-            // The history doesn't exist, we don't need to do anything.
-            0 => (),
-            1 => {
-                let item_id = ids[0];
-                table.delete_item(item_id).await?;
-            },
-            unexpected_len => {
-                let error = format!(
-                    "Expected only one item by the 'history_id' index, found {}",
-                    unexpected_len
-                );
-                return MmError::err(TxHistoryError::InternalError(error));
-            },
-        }
-
+        table
+            .delete_item_by_unique_index("history_id", history_id.as_str())
+            .await?;
         transaction.wait_for_complete().await?;
         Ok(())
     }
@@ -176,8 +136,7 @@ impl TableSignature for TxHistoryTable {
                 let table = upgrader.create_table(Self::table_name())?;
                 table.create_index("history_id", true)?;
             },
-            (1, 1) => (),
-            v => panic!("Unexpected (old, new) versions: {:?}", v),
+            _ => (),
         }
         Ok(())
     }

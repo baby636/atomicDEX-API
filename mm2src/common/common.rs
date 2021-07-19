@@ -1613,6 +1613,27 @@ pub fn write(path: &dyn AsRef<Path>, contents: &dyn AsRef<[u8]>) -> Result<(), S
     Ok(())
 }
 
+/// Read a folder asynchronously and return a list of files.
+#[cfg(not(target_arch = "wasm32"))]
+pub async fn read_dir_async<P: AsRef<Path>>(dir: P) -> Result<Vec<PathBuf>, String> {
+    use futures::StreamExt;
+
+    let mut result = Vec::new();
+    let mut entries = try_s!(async_std::fs::read_dir(dir.as_ref()).await);
+
+    while let Some(entry) = entries.next().await {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(e) => {
+                log::error!("Error '{}' reading from dir {}", e, dir.as_ref().display());
+                continue;
+            },
+        };
+        result.push(entry.path().into());
+    }
+    Ok(result)
+}
+
 /// Read a folder and return a list of files with their last-modified ms timestamps.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn read_dir(dir: &dyn AsRef<Path>) -> Result<Vec<(u64, PathBuf)>, String> {

@@ -26,7 +26,7 @@ mod db_driver;
 mod db_lock;
 
 pub use db_driver::{DbTransactionError, DbTransactionResult, DbUpgrader, InitDbError, InitDbResult, ItemId,
-                    OnUpgradeResult};
+                    OnUpgradeError, OnUpgradeResult};
 pub use db_lock::{get_or_initialize_db, ConstructibleDb, DbLocked};
 
 use db_driver::{IdbDatabaseBuilder, IdbDatabaseImpl, IdbObjectStoreImpl, IdbTransactionImpl, OnUpgradeNeededCb};
@@ -330,6 +330,24 @@ impl<Table: TableSignature> DbTable<'_, Table> {
             .and_then(|items| Self::deserialize_items(items))
     }
 
+    pub async fn get_item_by_unique_index<Value>(
+        &self,
+        index: &str,
+        index_value: Value,
+    ) -> DbTransactionResult<Option<(ItemId, Table)>>
+    where
+        Value: Serialize,
+    {
+        let items = self.get_items(index, index_value).await?;
+        if items.len() > 1 {
+            return MmError::err(DbTransactionError::MultipleItemsByUniqueIndex {
+                index: index.to_owned(),
+                got_items: items.len(),
+            });
+        }
+        Ok(items.into_iter().next())
+    }
+
     pub async fn get_item_ids<Value>(&self, index: &str, index_value: Value) -> DbTransactionResult<Vec<ItemId>>
     where
         Value: Serialize,
@@ -367,10 +385,54 @@ impl<Table: TableSignature> DbTable<'_, Table> {
         send_event_recv_response(&self.event_tx, event, result_rx).await
     }
 
+    /// Add the given `item` or replace the previous one if such item with the specified index exists already.
+    pub async fn replace_item_by_unique_index<IndexV>(
+        &self,
+        index: &str,
+        index_value: IndexV,
+        item: &Table,
+    ) -> DbTransactionResult<ItemId>
+    where
+        IndexV: Serialize,
+    {
+        let ids = self.get_item_ids(index, index_value).await?;
+        match ids.len() {
+            0 => self.add_item(item).await,
+            1 => {
+                let item_id = ids[0];
+                self.replace_item(item_id, item).await
+            },
+            got_items => {
+                return MmError::err(DbTransactionError::MultipleItemsByUniqueIndex {
+                    index: index.to_owned(),
+                    got_items,
+                });
+            },
+        }
+    }
+
     pub async fn delete_item(&self, item_id: ItemId) -> DbTransactionResult<()> {
         let (result_tx, result_rx) = oneshot::channel();
         let event = internal::DbTableEvent::DeleteItem { item_id, result_tx };
         send_event_recv_response(&self.event_tx, event, result_rx).await
+    }
+
+    pub async fn delete_item_by_unique_index<IndexV>(&self, index: &str, index_value: IndexV) -> DbTransactionResult<()>
+    where
+        IndexV: Serialize,
+    {
+        let ids = self.get_item_ids(index, index_value).await?;
+        match ids.len() {
+            0 => Ok(()),
+            1 => {
+                let item_id = ids[0];
+                self.delete_item(item_id).await
+            },
+            got_items => MmError::err(DbTransactionError::MultipleItemsByUniqueIndex {
+                index: index.to_owned(),
+                got_items,
+            }),
+        }
     }
 
     pub async fn clear(&self) -> DbTransactionResult<()> {
@@ -510,7 +572,6 @@ mod internal {
 mod tests {
     use super::*;
     use crate::for_tests::register_wasm_log;
-    use crate::log::LogLevel;
     use wasm_bindgen_test::*;
 
     wasm_bindgen_test_configure!(run_in_browser);
@@ -558,7 +619,7 @@ mod tests {
             block_height: 20000,
         };
 
-        register_wasm_log(LogLevel::Debug);
+        register_wasm_log();
 
         let db = IndexedDbBuilder::new(DbIdentifier::for_test(DB_NAME))
             .with_version(DB_VERSION)
@@ -632,7 +693,7 @@ mod tests {
             block_height: 20000,
         };
 
-        register_wasm_log(LogLevel::Debug);
+        register_wasm_log();
 
         let db = IndexedDbBuilder::new(DbIdentifier::for_test(DB_NAME))
             .with_version(DB_VERSION)
@@ -715,7 +776,7 @@ mod tests {
             block_height: 10000,
         };
 
-        register_wasm_log(LogLevel::Debug);
+        register_wasm_log();
 
         let db = IndexedDbBuilder::new(DbIdentifier::for_test(DB_NAME))
             .with_version(DB_VERSION)
@@ -757,7 +818,7 @@ mod tests {
             block_height: 10000,
         };
 
-        register_wasm_log(LogLevel::Debug);
+        register_wasm_log();
 
         let db = IndexedDbBuilder::new(DbIdentifier::for_test(DB_NAME))
             .with_version(DB_VERSION)
@@ -848,7 +909,7 @@ mod tests {
             }
         }
 
-        register_wasm_log(LogLevel::Debug);
+        register_wasm_log();
 
         let db_identifier = DbIdentifier::for_test(DB_NAME);
 
@@ -863,7 +924,7 @@ mod tests {
         const DB_NAME: &str = "TEST_OPEN_TWICE";
         const DB_VERSION: u32 = 1;
 
-        register_wasm_log(LogLevel::Debug);
+        register_wasm_log();
         let db_identifier = DbIdentifier::for_test(DB_NAME);
 
         let _db = IndexedDbBuilder::new(db_identifier.clone())
@@ -891,7 +952,7 @@ mod tests {
         const DB_NAME: &str = "TEST_OPEN_CLOSE_AND_OPEN";
         const DB_VERSION: u32 = 1;
 
-        register_wasm_log(LogLevel::Debug);
+        register_wasm_log();
         let db_identifier = DbIdentifier::for_test(DB_NAME);
 
         let db = IndexedDbBuilder::new(db_identifier.clone())
@@ -940,7 +1001,7 @@ mod tests {
             }
         }
 
-        register_wasm_log(LogLevel::Debug);
+        register_wasm_log();
 
         let swap_1 = SwapTable {
             swap_uuid: Uuid(vec![1, 2, 3]),

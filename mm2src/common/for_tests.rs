@@ -19,6 +19,7 @@ use crate::now_float;
 cfg_wasm32! {
     use crate::log::LogLevel;
     use crate::helperᶜ;
+    use std::str::FromStr;
 }
 
 cfg_native! {
@@ -754,12 +755,27 @@ pub fn mm_spat(
 }
 
 #[cfg(target_arch = "wasm32")]
-pub fn register_wasm_log(level: LogLevel) {
+pub fn register_wasm_log() {
     use crate::log::{register_callback, WasmCallback, WasmLoggerBuilder};
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    static IS_INITIALIZED: AtomicBool = AtomicBool::new(false);
+
+    // Check if the logger is initialized already
+    if let Err(true) = IS_INITIALIZED.compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed) {
+        return;
+    }
+
+    let log_level = match option_env!("RUST_WASM_TEST_LOG") {
+        Some(level_str) => LogLevel::from_str(level_str).unwrap_or(LogLevel::Info),
+        None => LogLevel::Info,
+    };
 
     register_callback(WasmCallback::console_log());
-    // a log is initialized already if [`WasmLoggerBuilder::try_init`] fails
-    let _ = WasmLoggerBuilder::default().level_filter(level).try_init();
+    WasmLoggerBuilder::default()
+        .level_filter(log_level)
+        .try_init()
+        .expect("Must be initialized only once");
 }
 
 /// Asks MM to enable the given currency in electrum mode

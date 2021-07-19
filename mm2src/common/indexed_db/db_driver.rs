@@ -96,6 +96,8 @@ pub enum DbTransactionError {
     ErrorGettingItems(String),
     #[display(fmt = "Error deleting items: {:?}", _0)]
     ErrorDeletingItems(String),
+    #[display(fmt = "Expected only one item by the unique '{}' index, got {}", index, got_items)]
+    MultipleItemsByUniqueIndex { index: String, got_items: usize },
     #[display(fmt = "No such index '{}'", index)]
     NoSuchIndex { index: String },
     #[display(fmt = "Invalid index '{}:{}': {:?}", index, index_value, description)]

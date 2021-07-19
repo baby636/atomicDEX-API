@@ -1221,23 +1221,7 @@ async fn trade_base_rel_electrum(
             .unwrap()
     }
 
-    // TODO remove this when the swap db is fully functional
-    #[cfg(target_arch = "wasm32")]
-    if 1 == 1 {
-        for uuid in uuids.iter() {
-            mm_bob
-                .wait_for_log(300., |log| log.contains(&format!("[swap uuid={}] Finished", uuid)))
-                .await
-                .unwrap();
-
-            mm_alice
-                .wait_for_log(300., |log| log.contains(&format!("[swap uuid={}] Finished", uuid)))
-                .await
-                .unwrap();
-        }
-        return;
-    }
-
+    #[cfg(not(target_arch = "wasm32"))]
     for uuid in uuids.iter() {
         // ensure the swaps are indexed to the SQLite database
         let expected_log = format!("Inserting new swap {} to the SQLite database", uuid);
@@ -1291,6 +1275,24 @@ async fn trade_base_rel_electrum(
     log!("Waiting 3 seconds for nodes to broadcast their swaps data..");
     Timer::sleep(3.).await;
 
+    // TODO remove this when the swap db is fully functional
+    #[cfg(target_arch = "wasm32")]
+    if 1 == 1 {
+        for uuid in uuids.iter() {
+            mm_bob
+                .wait_for_log(300., |log| log.contains(&format!("[swap uuid={}] Finished", uuid)))
+                .await
+                .unwrap();
+
+            mm_alice
+                .wait_for_log(300., |log| log.contains(&format!("[swap uuid={}] Finished", uuid)))
+                .await
+                .unwrap();
+        }
+        return;
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
     for uuid in uuids.iter() {
         log!("Checking alice status..");
         check_stats_swap_status(&mm_alice, &uuid, &MAKER_SUCCESS_EVENTS, &TAKER_SUCCESS_EVENTS).await;
@@ -1885,12 +1887,7 @@ fn test_swap_status() {
     })))
     .unwrap();
 
-    assert_eq!(
-        my_swap.0,
-        StatusCode::NOT_FOUND,
-        "!not found status code: {}",
-        my_swap.1
-    );
+    assert!(my_swap.0.is_server_error(), "!not found status code: {}", my_swap.1);
 
     let stats_swap = block_on(mm.rpc(json! ({
         "userpass": mm.userpass,
@@ -1901,9 +1898,8 @@ fn test_swap_status() {
     })))
     .unwrap();
 
-    assert_eq!(
-        stats_swap.0,
-        StatusCode::NOT_FOUND,
+    assert!(
+        stats_swap.0.is_server_error(),
         "!not found status code: {}",
         stats_swap.1
     );
