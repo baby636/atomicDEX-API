@@ -29,7 +29,7 @@ use common::executor::{spawn, Timer};
 use common::log::error;
 use common::mm_ctx::{from_ctx, MmArc, MmWeak};
 use common::mm_number::{Fraction, MmNumber};
-use common::{bits256, json_dir_entries, log, new_uuid, now_ms, remove_file, write};
+use common::{bits256, json_dir_entries, log, new_uuid, now_ms};
 use derive_more::Display;
 use futures::{compat::Future01CompatExt, lock::Mutex as AsyncMutex, StreamExt, TryFutureExt};
 use gstuff::slurp;
@@ -66,6 +66,10 @@ pub use best_orders::best_orders_rpc;
 use common::mm_error::MmError;
 pub use orderbook_depth::orderbook_depth_rpc;
 pub use orderbook_rpc::orderbook_rpc;
+
+cfg_native! {
+    use common::{remove_file, write};
+}
 
 #[path = "lp_ordermatch/best_orders.rs"] mod best_orders;
 #[path = "lp_ordermatch/new_protocol.rs"] mod new_protocol;
@@ -4069,6 +4073,13 @@ impl HistoricalOrder {
     }
 }
 
+/// TODO integrate to WASM
+#[cfg(target_arch = "wasm32")]
+fn save_my_maker_order(_ctx: &MmArc, _order: &MakerOrder) {
+    common::log::warn!("'save_my_maker_order' not supported yet")
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn save_my_maker_order(ctx: &MmArc, order: &MakerOrder) {
     let path = my_maker_order_file_path(ctx, &order.uuid);
     let content = json::to_vec(order).unwrap();
@@ -4095,6 +4106,13 @@ fn save_maker_order_on_update(ctx: &MmArc, order: &MakerOrder) {
     }
 }
 
+/// TODO integrate to WASM
+#[cfg(target_arch = "wasm32")]
+fn save_my_taker_order(_ctx: &MmArc, _order: &TakerOrder) {
+    common::log::warn!("'save_my_taker_order' not supported yet")
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn save_my_taker_order(ctx: &MmArc, order: &TakerOrder) {
     let path = my_taker_order_file_path(ctx, &order.request.uuid);
     let content = json::to_vec(order).unwrap();
@@ -4111,6 +4129,13 @@ fn save_my_new_taker_order(ctx: &MmArc, order: &TakerOrder) {
     }
 }
 
+/// TODO integrate to WASM
+#[cfg(target_arch = "wasm32")]
+fn save_my_order_in_history(_ctx: &MmArc, _order: &Order) {
+    common::log::warn!("'save_my_order_in_history' not supported yet")
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn save_my_order_in_history(ctx: &MmArc, order: &Order) {
     let path = match order {
         Order::Maker(o) => my_order_history_file_path(ctx, &o.uuid),
@@ -4120,7 +4145,14 @@ fn save_my_order_in_history(ctx: &MmArc, order: &Order) {
     write(&path, &content).unwrap();
 }
 
+/// TODO integrate to WASM
+#[cfg(target_arch = "wasm32")]
+fn delete_my_maker_order(_ctx: &MmArc, _order: &MakerOrder, _reason: MakerOrderCancellationReason) {
+    common::log::warn!("'delete_my_maker_order' not supported yet")
+}
+
 #[cfg_attr(test, mockable)]
+#[cfg(not(target_arch = "wasm32"))]
 fn delete_my_maker_order(ctx: &MmArc, order: &MakerOrder, reason: MakerOrderCancellationReason) {
     let path = my_maker_order_file_path(ctx, &order.uuid);
     match remove_file(&path) {
@@ -4137,7 +4169,14 @@ fn delete_my_maker_order(ctx: &MmArc, order: &MakerOrder, reason: MakerOrderCanc
     }
 }
 
+/// TODO integrate to WASM
+#[cfg(target_arch = "wasm32")]
+fn delete_my_taker_order(_ctx: &MmArc, _order: &TakerOrder, _reason: TakerOrderCancellationReason) {
+    common::log::warn!("'delete_my_taker_order' not supported yet")
+}
+
 #[cfg_attr(test, mockable)]
+#[cfg(not(target_arch = "wasm32"))]
 fn delete_my_taker_order(ctx: &MmArc, order: &TakerOrder, reason: TakerOrderCancellationReason) {
     let path = my_taker_order_file_path(ctx, &order.request.uuid);
     match remove_file(&path) {

@@ -263,7 +263,7 @@ impl DbTransaction<'_> {
         while let Some(event) = rx.next().await {
             match event {
                 internal::DbTransactionEvent::OpenTable { table_name, result_tx } => {
-                    Self::open_table(&transaction, table_name, result_tx).await
+                    Self::open_table(&transaction, table_name, result_tx)
                 },
                 internal::DbTransactionEvent::IsAborted { result_tx } => {
                     result_tx.send(Ok(transaction.aborted())).ok();
@@ -277,7 +277,7 @@ impl DbTransaction<'_> {
         }
     }
 
-    async fn open_table(
+    fn open_table(
         transaction: &IdbTransactionImpl,
         table_name: String,
         result_tx: oneshot::Sender<DbTransactionResult<mpsc::UnboundedSender<internal::DbTableEvent>>>,

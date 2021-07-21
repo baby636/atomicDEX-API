@@ -1,13 +1,11 @@
 //! Helpers used in the unit and integration tests.
 
 use bigdecimal::BigDecimal;
-use chrono::{Local, TimeZone};
 use http::{HeaderMap, StatusCode};
 use rand::Rng;
 use serde_json::{self as json, Value as Json};
 use std::collections::HashMap;
 use std::net::IpAddr;
-use std::path::PathBuf;
 use std::process::Child;
 use std::sync::Mutex;
 
@@ -18,7 +16,6 @@ use crate::now_float;
 
 cfg_wasm32! {
     use crate::log::LogLevel;
-    use crate::helperᶜ;
     use std::str::FromStr;
 }
 
@@ -27,6 +24,7 @@ cfg_native! {
     use crate::log::dashboard_path;
     use crate::slurp;
     use crate::wio::{slurp_req, POOL};
+    use chrono::{Local, TimeZone};
     use bytes::Bytes;
     use futures::channel::oneshot;
     use futures::task::SpawnExt;
@@ -37,7 +35,7 @@ cfg_native! {
     use std::fs;
     use std::io::Write;
     use std::net::Ipv4Addr;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
     use std::process::Command;
 }
 
@@ -687,22 +685,6 @@ pub async fn wait_for_log_re(ctx: &MmArc, timeout_sec: f64, re_pred: &str) -> Re
     wait_for_log(&ctx, timeout_sec, |line| re.is_match(line)).await
 }
 
-#[cfg(target_arch = "wasm32")]
-pub async fn wait_for_log_re(ctx: &MmArc, timeout_sec: f64, re_pred: &str) -> Result<(), String> {
-    try_s!(
-        helperᶜ(
-            "common_wait_for_log_re",
-            try_s!(json::to_vec(&ToWaitForLogRe {
-                ctx: try_s!(ctx.ffi_handle()),
-                timeout_sec,
-                re_pred: re_pred.into()
-            }))
-        )
-        .await
-    );
-    Ok(())
-}
-
 /// Create RAII variables to the effect of dumping the log and the status dashboard at the end of the scope.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn mm_dump(log_path: &Path) -> (RaiiDump, RaiiDump) {
@@ -906,6 +888,7 @@ pub async fn enable_native(mm: &MarketMakerIt, coin: &str, urls: &[&str]) -> Jso
 /// We could also remove the old folders after some time in order not to spam the temporary folder.
 /// Though we don't always want to remove them right away, allowing developers to check the files).
 /// Appends IpAddr if it is pre-known
+#[cfg(not(target_arch = "wasm32"))]
 pub fn new_mm2_temp_folder_path(ip: Option<IpAddr>) -> PathBuf {
     let now = super::now_ms();
     let now = Local.timestamp((now / 1000) as i64, (now % 1000) as u32 * 1_000_000);

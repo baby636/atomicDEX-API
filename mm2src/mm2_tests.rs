@@ -1,14 +1,14 @@
 use super::{lp_main, LpMainParams};
 use bigdecimal::BigDecimal;
+use common::block_on;
 use common::executor::Timer;
 use common::for_tests::{check_my_swap_status, check_recent_swaps, check_stats_swap_status,
                         enable_native as enable_native_impl, enable_qrc20, find_metrics_in_json, from_env_file,
-                        mm_spat, new_mm2_temp_folder_path, LocalStart, MarketMakerIt, RaiiDump, MAKER_ERROR_EVENTS,
-                        MAKER_SUCCESS_EVENTS, TAKER_ERROR_EVENTS, TAKER_SUCCESS_EVENTS};
+                        mm_spat, LocalStart, MarketMakerIt, RaiiDump, MAKER_ERROR_EVENTS, MAKER_SUCCESS_EVENTS,
+                        TAKER_ERROR_EVENTS, TAKER_SUCCESS_EVENTS};
 use common::mm_metrics::{MetricType, MetricsJson};
 use common::mm_number::{Fraction, MmNumber};
 use common::privkey::key_pair_from_seed;
-use common::{block_on, slurp};
 use http::StatusCode;
 use num_rational::BigRational;
 use serde_json::{self as json, Value as Json};
@@ -22,12 +22,12 @@ use std::time::Duration;
 use uuid::Uuid;
 
 cfg_native! {
+    use common::for_tests::{get_passphrase, new_mm2_temp_folder_path};
+    use common::slurp;
     use hyper::header::ACCESS_CONTROL_ALLOW_ORIGIN;
-    use common::for_tests::get_passphrase;
 }
 
 cfg_wasm32! {
-    use common::call_back;
     use wasm_bindgen::prelude::*;
     use wasm_bindgen_test::*;
 
@@ -1337,18 +1337,6 @@ fn trade_test_electrum_and_eth_coins() {
         &[("ETH", "JST")]
     };
     block_on(trade_base_rel_electrum(pairs, 1, 2, 0.1));
-}
-
-#[cfg(target_arch = "wasm32")]
-#[no_mangle]
-pub extern "C" fn trade_test_electrum_and_eth_coins(cb_id: i32) {
-    use std::ptr::null;
-
-    common::executor::spawn(async move {
-        let pairs = [("ETH", "JST")];
-        trade_base_rel_electrum(&pairs, 1, 2, 0.1).await;
-        call_back(cb_id, null(), 0)
-    })
 }
 
 #[wasm_bindgen_test]

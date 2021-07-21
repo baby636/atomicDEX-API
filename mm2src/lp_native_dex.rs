@@ -215,34 +215,6 @@ fn fix_directories(ctx: &MmCtx) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(target_arch = "wasm32")]
-fn fix_directories(ctx: &MmCtx) -> Result<(), String> {
-    use std::os::raw::c_char;
-
-    #[wasm_bindgen(raw_module = "../../../js/defined-in-js.js")]
-    extern "C" {
-        pub fn host_ensure_dir_is_writable(ptr: *const c_char, len: i32) -> i32;
-    }
-    macro_rules! writeable_dir {
-        ($path: expr) => {
-            let path = $path;
-            let path = try_s!(path.to_str().ok_or("Non-unicode path"));
-            let rc = host_ensure_dir_is_writable(path.as_ptr() as *const c_char, path.len() as i32);
-            if rc != 0 {
-                return ERR!("Dir '{}' not writeable: {}", path, rc);
-            }
-        };
-    }
-
-    let dbdir = ctx.dbdir();
-    writeable_dir!(dbdir.join("SWAPS").join("MY"));
-    writeable_dir!(dbdir.join("SWAPS").join("STATS").join("MAKER"));
-    writeable_dir!(dbdir.join("SWAPS").join("STATS").join("TAKER"));
-    writeable_dir!(dbdir.join("ORDERS").join("MY").join("MAKER"));
-    writeable_dir!(dbdir.join("ORDERS").join("MY").join("TAKER"));
-    Ok(())
-}
-
 #[cfg(not(target_arch = "wasm32"))]
 fn migrate_db(ctx: &MmArc) -> Result<(), String> {
     let migration_num_path = ctx.dbdir().join(".migration");
@@ -369,9 +341,9 @@ pub async fn lp_init(ctx: MmArc) -> Result<(), String> {
     info!("Version: {} DT {}", MM_VERSION, MM_DATETIME);
     try_s!(lp_passphrase_init(&ctx));
 
-    try_s!(fix_directories(&ctx));
     #[cfg(not(target_arch = "wasm32"))]
     {
+        try_s!(fix_directories(&ctx));
         try_s!(ctx.init_sqlite_connection());
         try_s!(init_and_migrate_db(&ctx, &ctx.sqlite_connection()).await);
         try_s!(migrate_db(&ctx));
