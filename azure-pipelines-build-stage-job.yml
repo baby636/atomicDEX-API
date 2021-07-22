@@ -78,7 +78,7 @@ jobs:
         condition: eq( variables['Agent.OS'], 'Linux' )
       - bash: |
           cd target/target-wasm-debug/
-          zip upload/mm2-$(COMMIT_HASH)-$(Agent.OS)-Wasm-Debug mm2_bg.wasm mm2.js snippets -r
+          zip ../../upload/mm2-$(COMMIT_HASH)-$(Agent.OS)-Wasm-Debug mm2_bg.wasm mm2.js snippets -r
         displayName: 'Prepare debug WASM build upload Linux'
         condition: eq( variables['Agent.OS'], 'Linux' )
       - bash: |
