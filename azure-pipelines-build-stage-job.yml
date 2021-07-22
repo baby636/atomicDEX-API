@@ -37,6 +37,11 @@ jobs:
           cat MM_VERSION
           cargo build --release --bin mm2
         displayName: 'Build MM2 Release'
+      # Build WASM with the debug symbols.
+      - bash: |
+          wasm-pack build --dev --target web --out-dir target/target-wasm-debug
+        displayName: 'Build MM2 WASM Debug'
+        condition: eq( variables['Agent.OS'], 'Linux' )
       - bash: |
           cargo test --target wasm32-unknown-unknown --release --bin mm2
         displayName: 'Test MM2 WASM'
@@ -70,6 +75,11 @@ jobs:
       - bash: |
           zip upload/mm2-$(COMMIT_HASH)-$(Agent.OS)-Release target/release/mm2 -j
         displayName: 'Prepare release build upload Linux'
+        condition: eq( variables['Agent.OS'], 'Linux' )
+      - bash: |
+          cd target/target-wasm-debug/
+          zip upload/mm2-$(COMMIT_HASH)-$(Agent.OS)-Wasm-Debug mm2_bg.wasm mm2.js snippets -r
+        displayName: 'Prepare debug WASM build upload Linux'
         condition: eq( variables['Agent.OS'], 'Linux' )
       - bash: |
           cd target/release
