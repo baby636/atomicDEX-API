@@ -73,7 +73,7 @@ impl ZCoin {
     async fn my_z_unspents_ordered(&self) -> UtxoRpcResult<Vec<ZUnspent>> {
         let mut unspents = self
             .z_rpc()
-            .z_list_unspent(0, u32::MAX, true, &[&self.z_fields.z_addr_encoded])
+            .z_list_unspent(0, i32::MAX as u32, true, &[&self.z_fields.z_addr_encoded])
             .compat()
             .await?;
 

@@ -24,6 +24,8 @@ use secp256k1_bindings::SecretKey;
 use serialization::deserialize;
 use zcash_primitives::consensus;
 use zcash_primitives::legacy::Script as ZCashScript;
+use zcash_primitives::merkle_tree::MerklePath;
+use zcash_primitives::sapling::Rseed;
 use zcash_primitives::transaction::builder::{Builder as ZTxBuilder, Error as ZTxBuilderError};
 use zcash_primitives::transaction::components::{Amount, OutPoint as ZCashOutpoint, TxOut};
 
@@ -116,8 +118,40 @@ pub async fn z_send_dex_fee(
     let z_unspents = coin.my_z_unspents_ordered().await?;
     let current_block = coin.utxo_arc.rpc_client.get_block_count().compat().await? as u32;
     let mut tx_builder = ZTxBuilder::new(consensus::MAIN_NETWORK, current_block.into());
-    // tx_builder.add_sapling_spend()
 
+    let sat = sat_from_big_decimal(&z_unspents[0].amount.to_decimal(), coin.as_ref().decimals).unwrap();
+
+    let for_r_seed = rand::random();
+    let note = coin
+        .z_fields
+        .z_addr
+        .create_note(sat, Rseed::AfterZip212(for_r_seed))
+        .unwrap();
+
+    tx_builder
+        .add_sapling_spend(
+            coin.z_fields.z_spending_key.clone(),
+            *coin.z_fields.z_addr.diversifier(),
+            note,
+            MerklePath {
+                auth_path: vec![],
+                position: 0,
+            },
+        )
+        .unwrap();
+
+    tx_builder
+        .add_sapling_output(
+            None,
+            coin.z_fields.z_addr.clone(),
+            Amount::from_u64(sat - 1000).unwrap(),
+            None,
+        )
+        .unwrap();
+
+    let tx = tx_builder
+        .build(consensus::BranchId::Sapling, &coin.z_fields.z_tx_prover)
+        .unwrap();
     let payment_script = dex_fee_script([0; 16], time_lock, watcher_pub, coin.utxo_arc.key_pair.public());
     let hash = dhash160(&payment_script);
     let htlc_address = Address {
