@@ -112,6 +112,12 @@ pub async fn z_send_dex_fee(
     amount: BigDecimal,
 ) -> Result<(UtxoTx, Script), MmError<ZSendHtlcError>> {
     let _lock = coin.z_fields.z_tx_mutex.lock().await;
+
+    let z_unspents = coin.my_z_unspents_ordered().await?;
+    let current_block = coin.utxo_arc.rpc_client.get_block_count().compat().await? as u32;
+    let mut tx_builder = ZTxBuilder::new(consensus::MAIN_NETWORK, current_block.into());
+    // tx_builder.add_sapling_spend()
+
     let payment_script = dex_fee_script([0; 16], time_lock, watcher_pub, coin.utxo_arc.key_pair.public());
     let hash = dhash160(&payment_script);
     let htlc_address = Address {

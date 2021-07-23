@@ -34,6 +34,8 @@ mod z_htlc;
 use z_htlc::{z_p2sh_spend, z_send_dex_fee, z_send_htlc};
 
 mod z_rpc;
+use crate::z_coin::z_rpc::ZUnspent;
+use futures::compat::Future01CompatExt;
 use z_rpc::ZRpcOps;
 
 #[cfg(test)] mod z_coin_tests;
@@ -67,6 +69,17 @@ impl ZCoin {
     pub fn z_rpc(&self) -> &(dyn ZRpcOps + Send + Sync) { self.utxo_arc.rpc_client.as_ref() }
 
     pub fn rpc_client(&self) -> &UtxoRpcClientEnum { &self.utxo_arc.rpc_client }
+
+    async fn my_z_unspents_ordered(&self) -> UtxoRpcResult<Vec<ZUnspent>> {
+        let mut unspents = self
+            .z_rpc()
+            .z_list_unspent(0, u32::MAX, true, &[&self.z_fields.z_addr_encoded])
+            .compat()
+            .await?;
+
+        unspents.sort_unstable_by(|a, b| a.amount.cmp(&b.amount));
+        Ok(unspents)
+    }
 }
 
 impl AsRef<UtxoCoinFields> for ZCoin {
