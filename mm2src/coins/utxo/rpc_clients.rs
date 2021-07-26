@@ -448,6 +448,8 @@ pub struct VerboseBlock {
     pub previousblockhash: Option<H256Json>,
     /// Hash of next block
     pub nextblockhash: Option<H256Json>,
+    #[serde(rename = "finalsaplingroot")]
+    pub final_sapling_root: Option<H256Json>,
 }
 
 pub type RpcReqSub<T> = async_oneshot::Sender<Result<T, JsonRpcError>>;
