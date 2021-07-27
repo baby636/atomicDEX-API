@@ -113,10 +113,10 @@ fn zombie_coin_send_and_refund_dex_fee() {
 
     let lock_time = (now_ms() / 1000) as u32 - 1000;
     let watcher_pub = coin.utxo_arc.key_pair.public();
-    let (tx, redeem_script) = block_on(z_send_dex_fee(&coin, lock_time, watcher_pub, "0.01".parse().unwrap())).unwrap();
+    let (tx, redeem_script) =
+        block_on(z_send_dex_fee(&coin, lock_time, watcher_pub, "0.0001".parse().unwrap())).unwrap();
     println!("dex fee tx {}", hex::encode(&*tx.hash().reversed()));
 
-    /*
     let script_data = ScriptBuilder::default().push_opcode(Opcode::OP_1).into_script();
     let refund = block_on(z_p2sh_spend(
         &coin,
@@ -128,8 +128,6 @@ fn zombie_coin_send_and_refund_dex_fee() {
     ))
     .unwrap();
     println!("dex fee refund tx {}", hex::encode(&*refund.hash().reversed()));
-
-     */
 }
 
 #[test]

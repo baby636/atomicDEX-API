@@ -25,7 +25,7 @@ use futures01::Future;
 use keys::hash::H256;
 use keys::{Address, Public};
 use rpc::v1::types::H256 as H256Json;
-use script::Script;
+use script::{Builder as ScriptBuilder, Opcode, Script};
 use secp256k1_bindings::SecretKey;
 use serialization::deserialize;
 use std::collections::HashMap;
@@ -35,7 +35,7 @@ use zcash_client_backend::encoding::decode_extended_spending_key;
 use zcash_client_backend::wallet::AccountId;
 use zcash_primitives::consensus;
 use zcash_primitives::constants::mainnet as z_mainnet_constants;
-use zcash_primitives::legacy::Script as ZCashScript;
+use zcash_primitives::legacy::{Script as ZCashScript, TransparentAddress};
 use zcash_primitives::merkle_tree::{CommitmentTree, Hashable, IncrementalWitness};
 use zcash_primitives::sapling::Node;
 use zcash_primitives::transaction::builder::{Builder as ZTxBuilder, Error as ZTxBuilderError};
@@ -127,42 +127,57 @@ pub async fn z_send_dex_fee(
     amount: BigDecimal,
 ) -> Result<(UtxoTx, Script), MmError<ZSendHtlcError>> {
     let _lock = coin.z_fields.z_tx_mutex.lock().await;
+    let tx_fee: BigDecimal = "0.00001".parse().unwrap();
+    let total_required = &amount + &tx_fee;
 
     let z_unspents = coin.my_z_unspents_ordered().await?;
-    println!("{:?}", z_unspents);
+    let mut selected_unspents = Vec::new();
+    let mut total_input_amount = BigDecimal::from(0);
+    let mut change = BigDecimal::from(0);
+
+    for unspent in z_unspents {
+        total_input_amount += unspent.amount.to_decimal();
+        selected_unspents.push(unspent);
+
+        if total_input_amount >= total_required {
+            change = &total_input_amount - &total_required;
+            break;
+        }
+    }
+
     let current_block = coin.utxo_arc.rpc_client.get_block_count().compat().await? as u32;
     let mut tx_builder = ZTxBuilder::new(consensus::MAIN_NETWORK, current_block.into());
 
-    let sat = sat_from_big_decimal(&z_unspents[0].amount.to_decimal(), coin.as_ref().decimals).unwrap();
-
-    let prev_tx = coin
-        .rpc_client()
-        .get_verbose_transaction(z_unspents[0].txid.clone())
-        .compat()
-        .await?;
-
-    let z_cash_tx = ZTransaction::read(prev_tx.hex.as_slice()).unwrap();
-    println!("{:?}", z_cash_tx);
-
     let mut ext = HashMap::new();
     ext.insert(AccountId::default(), (&coin.z_fields.z_spending_key).into());
-    let decrypted = decrypt_transaction(
-        &consensus::MAIN_NETWORK,
-        prev_tx.height.unwrap().try_into().unwrap(),
-        &z_cash_tx,
-        &ext,
-    );
-    println!("{:?}", decrypted[0].note);
+    let mut selected_notes_with_witness: Vec<(_, Option<IncrementalWitness<Node>>)> =
+        Vec::with_capacity(selected_unspents.len());
 
-    let prev_tx: UtxoTx = deserialize(prev_tx.hex.as_slice()).unwrap();
+    for unspent in selected_unspents {
+        let prev_tx = coin
+            .rpc_client()
+            .get_verbose_transaction(unspent.txid.clone())
+            .compat()
+            .await?;
+
+        let z_cash_tx = ZTransaction::read(prev_tx.hex.as_slice()).unwrap();
+        let decrypted = decrypt_transaction(
+            &consensus::MAIN_NETWORK,
+            prev_tx.height.unwrap().try_into().unwrap(),
+            &z_cash_tx,
+            &ext,
+        );
+        let decrypted_output = decrypted
+            .iter()
+            .find(|out| out.index as u32 == unspent.out_index)
+            .unwrap();
+        selected_notes_with_witness.push((decrypted_output.note.clone(), None));
+    }
 
     let mut tree = CommitmentTree::<Node>::empty();
-    println!("{:?}", tree.root());
-
     let mut root = [0u8; 32];
     tree.root().write(&mut root as &mut [u8]).unwrap();
     let default_root = Some(H256Json::from(root).reversed());
-    println!("{:?}", default_root);
 
     let mut processed_block = 0;
     let current_block = coin.current_block().wait().unwrap();
@@ -174,8 +189,6 @@ pub async fn z_send_dex_fee(
         _ => panic!(),
     };
 
-    let mut witness: Option<IncrementalWitness<_>> = None;
-
     while processed_block <= current_block {
         let block_hash = native_client.get_block_hash(processed_block).wait().unwrap();
         let block = native_client.get_block(block_hash).wait().unwrap();
@@ -185,14 +198,18 @@ pub async fn z_send_dex_fee(
                 let tx = native_client.get_transaction_bytes(hash).wait().unwrap();
                 let tx: UtxoTx = deserialize(tx.as_slice()).unwrap();
                 for output in tx.shielded_outputs {
-                    if let Some(ref mut w) = witness {
-                        w.append(Node::new(output.cmu.clone().take())).unwrap();
+                    for (_, witness) in selected_notes_with_witness.iter_mut() {
+                        if let Some(ref mut w) = witness {
+                            w.append(Node::new(output.cmu.clone().take())).unwrap();
+                        }
                     }
 
                     tree.append(Node::new(output.cmu.clone().take())).unwrap();
 
-                    if output.cmu == prev_tx.shielded_outputs[0].cmu {
-                        witness = Some(IncrementalWitness::from_tree(&tree));
+                    for (note, witness) in selected_notes_with_witness.iter_mut() {
+                        if H256::from(note.cmu().to_bytes()) == output.cmu {
+                            *witness = Some(IncrementalWitness::from_tree(&tree));
+                        }
                     }
                 }
             }
@@ -200,30 +217,52 @@ pub async fn z_send_dex_fee(
             let tree_root = tree.root();
             let expected_root = Node::new(current_sapling_root.clone().unwrap().reversed().0);
             assert_eq!(tree_root, expected_root);
-            if witness.is_some() {
-                assert_eq!(tree_root, witness.as_ref().unwrap().root());
-            }
         }
         processed_block += 1;
     }
 
-    tx_builder
-        .add_sapling_spend(
-            coin.z_fields.z_spending_key.clone(),
-            *coin.z_fields.z_addr.diversifier(),
-            decrypted[0].note.clone(),
-            witness.unwrap().path().unwrap(),
-        )
-        .unwrap();
+    for (note, witness) in selected_notes_with_witness {
+        tx_builder
+            .add_sapling_spend(
+                coin.z_fields.z_spending_key.clone(),
+                *coin.z_fields.z_addr.diversifier(),
+                note,
+                witness.unwrap().path().unwrap(),
+            )
+            .unwrap();
+    }
 
-    tx_builder
-        .add_sapling_output(
-            None,
-            coin.z_fields.z_addr.clone(),
-            Amount::from_u64(sat - 1000).unwrap(),
-            None,
-        )
-        .unwrap();
+    if change > BigDecimal::from(0) {
+        let change_sat = sat_from_big_decimal(&change, coin.utxo_arc.decimals).unwrap();
+
+        tx_builder
+            .add_sapling_output(
+                None,
+                coin.z_fields.z_addr.clone(),
+                Amount::from_u64(change_sat).unwrap(),
+                None,
+            )
+            .unwrap();
+    }
+
+    let fee_amount = sat_from_big_decimal(&amount, coin.utxo_arc.decimals).unwrap();
+    let payment_script = dex_fee_script([0; 16], time_lock, watcher_pub, coin.utxo_arc.key_pair.public());
+    let script_hash = dhash160(&payment_script);
+
+    tx_builder.add_transparent_output(
+        &TransparentAddress::Script(script_hash.take()),
+        Amount::from_u64(fee_amount).unwrap(),
+    );
+
+    let script = ScriptBuilder::default()
+        .push_opcode(Opcode::OP_RETURN)
+        .push_data(&payment_script);
+    let out = TxOut {
+        value: Amount::zero(),
+        script_pubkey: ZCashScript(script.into_bytes().take()),
+    };
+
+    tx_builder.add_tx_out(out);
 
     let (tx, _) = tx_builder
         .build(consensus::BranchId::Sapling, &coin.z_fields.z_tx_prover)
@@ -239,73 +278,7 @@ pub async fn z_send_dex_fee(
         .compat()
         .await?;
 
-    let payment_script = dex_fee_script([0; 16], time_lock, watcher_pub, coin.utxo_arc.key_pair.public());
-
     Ok((mm_tx, payment_script))
-    /*
-    let hash = dhash160(&payment_script);
-    let htlc_address = Address {
-        prefix: coin.utxo_arc.conf.p2sh_addr_prefix,
-        t_addr_prefix: coin.utxo_arc.conf.p2sh_t_addr_prefix,
-        hash,
-        checksum_type: coin.utxo_arc.conf.checksum_type,
-        addr_format: UtxoAddressFormat::Standard,
-        hrp: None,
-    };
-
-    let amount_sat = sat_from_big_decimal(&amount, coin.utxo_arc.decimals).expect("temporary code");
-    let amount = big_decimal_from_sat_unsigned(amount_sat, coin.utxo_arc.decimals);
-
-    let address = htlc_address.to_string();
-    if let UtxoRpcClientEnum::Native(native) = coin.rpc_client() {
-        native.import_address(&address, &address, false).compat().await.unwrap();
-    }
-
-    let send_item = ZSendManyItem {
-        amount,
-        op_return: Some(payment_script.to_vec().into()),
-        address,
-    };
-
-    let op_id = coin
-        .z_rpc()
-        .z_send_many(&coin.z_fields.z_addr_encoded, vec![send_item])
-        .compat()
-        .await?;
-
-    loop {
-        let operation_statuses = coin.z_rpc().z_get_send_many_status(&[&op_id]).compat().await?;
-
-        match operation_statuses.first() {
-            Some(ZOperationStatus::Executing { .. }) | Some(ZOperationStatus::Queued { .. }) => {
-                Timer::sleep(1.).await;
-                continue;
-            },
-            Some(ZOperationStatus::Failed { .. }) => {
-                break Err(MmError::new(ZSendHtlcError::ZOperationFailed(operation_statuses)));
-            },
-            Some(ZOperationStatus::Success { result, .. }) => {
-                let tx_bytes = coin
-                    .rpc_client()
-                    .get_transaction_bytes(result.txid.clone())
-                    .compat()
-                    .await?;
-                let tx: UtxoTx = deserialize(tx_bytes.0.as_slice()).expect("rpc returns valid tx bytes");
-
-                /*
-                coin.rpc_client()
-                    .wait_for_confirmations(&tx, 1, false, now_ms() / 1000 + 120, 1)
-                    .compat()
-                    .await
-                    .unwrap();
-                 */
-                break Ok((tx, payment_script));
-            },
-            None => break Err(MmError::new(ZSendHtlcError::ZOperationStatusesEmpty)),
-        }
-    }
-
-     */
 }
 
 #[derive(Debug, Display)]
@@ -376,67 +349,4 @@ pub async fn z_p2sh_spend(
         .await?;
 
     Ok(refund_tx)
-}
-
-#[test]
-fn check_zombie_sapling_commitment_tree_root() {
-    let conf = json!({
-        "coin": "ZOMBIE",
-        "asset": "ZOMBIE",
-        "fname": "ZOMBIE (TESTCOIN)",
-        "txversion": 4,
-        "overwintered": 1,
-        "mm2": 1,
-    });
-    let req = json!({
-        "method": "enable",
-        "coin": "ZOMBIE"
-    });
-
-    let ctx = MmCtxBuilder::default().into_mm_arc();
-    let priv_key = [1; 32];
-    let z_key = decode_extended_spending_key(z_mainnet_constants::HRP_SAPLING_EXTENDED_SPENDING_KEY, "secret-extended-key-main1q0k2ga2cqqqqpq8m8j6yl0say83cagrqp53zqz54w38ezs8ly9ly5ptamqwfpq85u87w0df4k8t2lwyde3n9v0gcr69nu4ryv60t0kfcsvkr8h83skwqex2nf0vr32794fmzk89cpmjptzc22lgu5wfhhp8lgf3f5vn2l3sge0udvxnm95k6dtxj2jwlfyccnum7nz297ecyhmd5ph526pxndww0rqq0qly84l635mec0x4yedf95hzn6kcgq8yxts26k98j9g32kjc8y83fe").unwrap().unwrap();
-
-    let coin = block_on(z_coin_from_conf_and_request_with_z_key(
-        &ctx, "ZOMBIE", &conf, &req, &priv_key, z_key,
-    ))
-    .unwrap();
-
-    let mut tree = CommitmentTree::<Node>::empty();
-    println!("{:?}", tree.root());
-
-    let mut root = [0u8; 32];
-    tree.root().write(&mut root as &mut [u8]).unwrap();
-    let default_root = Some(H256Json::from(root).reversed());
-    println!("{:?}", default_root);
-
-    let mut processed_block = 0;
-    let current_block = coin.current_block().wait().unwrap();
-    let mut current_sapling_root = default_root;
-    let zero_root = Some(H256Json::default());
-
-    let native_client = match coin.rpc_client() {
-        UtxoRpcClientEnum::Native(native) => native,
-        _ => panic!(),
-    };
-
-    while processed_block <= current_block {
-        let block_hash = native_client.get_block_hash(processed_block).wait().unwrap();
-        let block = native_client.get_block(block_hash).wait().unwrap();
-        if current_sapling_root != block.final_sapling_root && block.final_sapling_root != zero_root {
-            current_sapling_root = block.final_sapling_root;
-            for hash in block.tx {
-                let tx = native_client.get_transaction_bytes(hash).wait().unwrap();
-                let tx: UtxoTx = deserialize(tx.as_slice()).unwrap();
-                for output in tx.shielded_outputs {
-                    tree.append(Node::new(output.cmu.take())).unwrap();
-                }
-            }
-
-            let tree_root = tree.root();
-            let expected_root = Node::new(current_sapling_root.clone().unwrap().reversed().0);
-            assert_eq!(tree_root, expected_root);
-        }
-        processed_block += 1;
-    }
 }
