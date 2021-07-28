@@ -84,6 +84,17 @@ pub enum SendOutputsErr {
     TxBuilderError(ZTxBuilderError),
     Rpc(UtxoRpcError),
     NumConversion(NumConversError),
+    #[display(
+        fmt = "Not enough {} to generate a tx: available {}, required at least {}",
+        coin,
+        available,
+        required
+    )]
+    InsufficientBalance {
+        coin: String,
+        available: BigDecimal,
+        required: BigDecimal,
+    },
 }
 
 impl From<ZTxBuilderError> for SendOutputsErr {
@@ -134,6 +145,14 @@ impl ZCoin {
                 change = &total_input_amount - &total_required;
                 break;
             }
+        }
+
+        if total_input_amount < total_required {
+            return MmError::err(SendOutputsErr::InsufficientBalance {
+                coin: self.ticker().into(),
+                available: total_input_amount,
+                required: total_required,
+            });
         }
 
         let current_block = self.utxo_arc.rpc_client.get_block_count().compat().await? as u32;
