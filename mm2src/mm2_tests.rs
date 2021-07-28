@@ -1222,12 +1222,12 @@ async fn trade_base_rel_electrum(
 
     for uuid in uuids.iter() {
         mm_bob
-            .wait_for_log(300., |log| log.contains(&format!("[swap uuid={}] Finished", uuid)))
+            .wait_for_log(900., |log| log.contains(&format!("[swap uuid={}] Finished", uuid)))
             .await
             .unwrap();
 
         mm_alice
-            .wait_for_log(300., |log| log.contains(&format!("[swap uuid={}] Finished", uuid)))
+            .wait_for_log(900., |log| log.contains(&format!("[swap uuid={}] Finished", uuid)))
             .await
             .unwrap();
 
@@ -1302,7 +1302,7 @@ async fn trade_base_rel_electrum(
 #[cfg(not(target_arch = "wasm32"))]
 fn trade_test_electrum_and_eth_coins() {
     let pairs: &[_] = if cfg!(feature = "zhtlc") {
-        &[("RICK", "ZOMBIE")]
+        &[("ZOMBIE", "RICK")]
     } else {
         &[("ETH", "JST")]
     };

@@ -761,13 +761,15 @@ impl NativeClientImpl {
 
     /// https://developer.bitcoin.org/reference/rpc/getblock.html
     /// Always returns verbose block
-    pub fn get_block(&self, hash: H256Json) -> RpcRes<VerboseBlock> {
+    pub fn get_block(&self, hash: H256Json) -> UtxoRpcFut<VerboseBlock> {
         let verbose = true;
-        rpc_func!(self, "getblock", hash, verbose)
+        Box::new(rpc_func!(self, "getblock", hash, verbose).map_to_mm_fut(UtxoRpcError::from))
     }
 
     /// https://developer.bitcoin.org/reference/rpc/getblockhash.html
-    pub fn get_block_hash(&self, height: u64) -> RpcRes<H256Json> { rpc_func!(self, "getblockhash", height) }
+    pub fn get_block_hash(&self, height: u64) -> UtxoRpcFut<H256Json> {
+        Box::new(rpc_func!(self, "getblockhash", height).map_to_mm_fut(UtxoRpcError::from))
+    }
 
     /// https://developer.bitcoin.org/reference/rpc/getblockcount.html
     pub fn get_block_count(&self) -> RpcRes<u64> { rpc_func!(self, "getblockcount") }
