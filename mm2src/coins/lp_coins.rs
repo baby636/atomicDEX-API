@@ -56,6 +56,7 @@ use std::ops::Deref;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
+use zcash_primitives::transaction::Transaction as ZTransaction;
 
 // using custom copy of try_fus as futures crate was renamed to futures01
 macro_rules! try_fus {
@@ -131,9 +132,11 @@ pub trait Transaction: fmt::Debug + 'static {
 pub enum TransactionEnum {
     UtxoTx(UtxoTx),
     SignedEthTx(SignedEthTx),
+    ZTransaction(ZTransaction),
 }
 ifrom!(TransactionEnum, UtxoTx);
 ifrom!(TransactionEnum, SignedEthTx);
+ifrom!(TransactionEnum, ZTransaction);
 
 // NB: When stable and groked by IDEs, `enum_dispatch` can be used instead of `Deref` to speed things up.
 impl Deref for TransactionEnum {
@@ -142,6 +145,7 @@ impl Deref for TransactionEnum {
         match self {
             TransactionEnum::UtxoTx(ref t) => t,
             TransactionEnum::SignedEthTx(ref t) => t,
+            TransactionEnum::ZTransaction(ref t) => t,
         }
     }
 }
