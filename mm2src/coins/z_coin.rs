@@ -51,6 +51,8 @@ use z_htlc::{z_p2sh_spend, z_send_dex_fee, z_send_htlc};
 mod z_rpc;
 use crate::z_coin::z_rpc::ZUnspent;
 use z_rpc::ZRpcOps;
+use zcash_primitives::consensus::{BlockHeight, H0};
+use zcash_primitives::sapling::note_encryption::try_sapling_output_recovery;
 
 #[cfg(test)] mod z_coin_tests;
 
@@ -278,7 +280,7 @@ impl ZCoin {
             let change_sat = sat_from_big_decimal(&change, self.utxo_arc.decimals)?;
 
             tx_builder.add_sapling_output(
-                Some(DEX_FEE_OVK),
+                None,
                 self.z_fields.my_z_addr.clone(),
                 Amount::from_u64(change_sat).unwrap(),
                 None,
@@ -433,10 +435,11 @@ impl MarketCoinOps for ZCoin {
 }
 
 impl SwapOps for ZCoin {
-    fn send_taker_fee(&self, _fee_addr: &[u8], amount: BigDecimal) -> TransactionFut {
+    fn send_taker_fee(&self, _fee_addr: &[u8], amount: BigDecimal, uuid: &[u8]) -> TransactionFut {
         let selfi = self.clone();
+        let uuid = uuid.to_owned();
         let fut = async move {
-            let tx = try_s!(z_send_dex_fee(&selfi, amount).await);
+            let tx = try_s!(z_send_dex_fee(&selfi, amount, &uuid).await);
             Ok(tx.into())
         };
         Box::new(fut.boxed().compat())
@@ -586,14 +589,82 @@ impl SwapOps for ZCoin {
 
     fn validate_fee(
         &self,
-        _fee_tx: &TransactionEnum,
+        fee_tx: &TransactionEnum,
         _expected_sender: &[u8],
         _fee_addr: &[u8],
-        _amount: &BigDecimal,
-        _min_block_number: u64,
+        amount: &BigDecimal,
+        min_block_number: u64,
+        uuid: &[u8],
     ) -> Box<dyn Future<Item = (), Error = String> + Send> {
-        // TODO avoid dummy implementation
-        Box::new(futures01::future::ok(()))
+        let z_tx = match fee_tx {
+            TransactionEnum::ZTransaction(t) => t.clone(),
+            _ => panic!("Unexpected tx {:?}", fee_tx),
+        };
+        let amount_sat = try_fus!(sat_from_big_decimal(amount, self.utxo_arc.decimals));
+        let expected_memo = MemoBytes::from_bytes(uuid).expect("Uuid length < 512");
+
+        let coin = self.clone();
+        let fut = async move {
+            let tx_hash = H256::from(z_tx.txid().0).reversed();
+            let tx_from_rpc = try_s!(coin.rpc_client().get_verbose_transaction(tx_hash.into()).compat().await);
+            let mut encoded = Vec::with_capacity(1024);
+            z_tx.write(&mut encoded).expect("Writing should not fail");
+            if encoded != tx_from_rpc.hex.0 {
+                return ERR!(
+                    "Encoded transaction {:?} does not match the tx {:?} from RPC",
+                    encoded,
+                    tx_from_rpc
+                );
+            }
+
+            let block_height = match tx_from_rpc.height {
+                Some(h) => {
+                    if h < min_block_number {
+                        return ERR!("Dex fee tx {:?} confirmed before min block {}", z_tx, min_block_number);
+                    } else {
+                        BlockHeight::from_u32(h as u32)
+                    }
+                },
+                None => H0,
+            };
+
+            for shielded_out in z_tx.shielded_outputs.iter() {
+                if let Some((note, address, memo)) =
+                    try_sapling_output_recovery(&consensus::MAIN_NETWORK, block_height, &DEX_FEE_OVK, shielded_out)
+                {
+                    if address != coin.z_fields.dex_fee_addr {
+                        let encoded =
+                            encode_payment_address(z_mainnet_constants::HRP_SAPLING_PAYMENT_ADDRESS, &address);
+                        let expected = encode_payment_address(
+                            z_mainnet_constants::HRP_SAPLING_PAYMENT_ADDRESS,
+                            &coin.z_fields.dex_fee_addr,
+                        );
+                        return ERR!(
+                            "Dex fee was sent to the invalid address {}, expected {}",
+                            encoded,
+                            expected
+                        );
+                    }
+
+                    if note.value != amount_sat {
+                        return ERR!("Dex fee has invalid amount {}, expected {}", note.value, amount_sat);
+                    }
+
+                    if memo != expected_memo {
+                        return ERR!("Dex fee has invalid memo {:?}, expected {:?}", memo, expected_memo);
+                    }
+
+                    return Ok(());
+                }
+            }
+
+            ERR!(
+                "The dex fee tx {:?} has no shielded outputs or outputs decryption failed",
+                z_tx
+            )
+        };
+
+        Box::new(fut.boxed().compat())
     }
 
     fn validate_maker_payment(

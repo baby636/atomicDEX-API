@@ -2345,6 +2345,7 @@ fn test_validate_fee_wrong_sender() {
             &*DEX_FEE_ADDR_RAW_PUBKEY,
             &amount,
             0,
+            &[],
         )
         .wait()
         .unwrap_err();
@@ -2365,7 +2366,14 @@ fn test_validate_fee_min_block() {
     let amount: BigDecimal = "0.0014157".parse().unwrap();
     let sender_pub = hex::decode("03ad6f89abc2e5beaa8a3ac28e22170659b3209fe2ddf439681b4b8f31508c36fa").unwrap();
     let validate_err = coin
-        .validate_fee(&taker_fee_tx, &sender_pub, &*DEX_FEE_ADDR_RAW_PUBKEY, &amount, 810329)
+        .validate_fee(
+            &taker_fee_tx,
+            &sender_pub,
+            &*DEX_FEE_ADDR_RAW_PUBKEY,
+            &amount,
+            810329,
+            &[],
+        )
         .wait()
         .unwrap_err();
     assert!(validate_err.contains("confirmed before min_block"));
@@ -2385,7 +2393,7 @@ fn test_validate_fee_bch_70_bytes_signature() {
     let taker_fee_tx = coin.tx_enum_from_bytes(&tx_bytes).unwrap();
     let amount: BigDecimal = "0.0001".parse().unwrap();
     let sender_pub = hex::decode("02ae7dc4ef1b49aadeff79cfad56664105f4d114e1716bc4f930cb27dbd309e521").unwrap();
-    coin.validate_fee(&taker_fee_tx, &sender_pub, &*DEX_FEE_ADDR_RAW_PUBKEY, &amount, 0)
+    coin.validate_fee(&taker_fee_tx, &sender_pub, &*DEX_FEE_ADDR_RAW_PUBKEY, &amount, 0, &[])
         .wait()
         .unwrap();
 }

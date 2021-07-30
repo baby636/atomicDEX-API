@@ -56,6 +56,7 @@ use std::ops::Deref;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
+#[cfg(feature = "zhtlc")]
 use zcash_primitives::transaction::Transaction as ZTransaction;
 
 // using custom copy of try_fus as futures crate was renamed to futures01
@@ -132,10 +133,12 @@ pub trait Transaction: fmt::Debug + 'static {
 pub enum TransactionEnum {
     UtxoTx(UtxoTx),
     SignedEthTx(SignedEthTx),
+    #[cfg(feature = "zhtlc")]
     ZTransaction(ZTransaction),
 }
 ifrom!(TransactionEnum, UtxoTx);
 ifrom!(TransactionEnum, SignedEthTx);
+#[cfg(feature = "zhtlc")]
 ifrom!(TransactionEnum, ZTransaction);
 
 // NB: When stable and groked by IDEs, `enum_dispatch` can be used instead of `Deref` to speed things up.
@@ -145,6 +148,7 @@ impl Deref for TransactionEnum {
         match self {
             TransactionEnum::UtxoTx(ref t) => t,
             TransactionEnum::SignedEthTx(ref t) => t,
+            #[cfg(feature = "zhtlc")]
             TransactionEnum::ZTransaction(ref t) => t,
         }
     }
@@ -175,7 +179,7 @@ pub enum NegotiateSwapContractAddrErr {
 
 /// Swap operations (mostly based on the Hash/Time locked transactions implemented by coin wallets).
 pub trait SwapOps {
-    fn send_taker_fee(&self, fee_addr: &[u8], amount: BigDecimal) -> TransactionFut;
+    fn send_taker_fee(&self, fee_addr: &[u8], amount: BigDecimal, uuid: &[u8]) -> TransactionFut;
 
     fn send_maker_payment(
         &self,
@@ -238,6 +242,7 @@ pub trait SwapOps {
         fee_addr: &[u8],
         amount: &BigDecimal,
         min_block_number: u64,
+        uuid: &[u8],
     ) -> Box<dyn Future<Item = (), Error = String> + Send>;
 
     fn validate_maker_payment(

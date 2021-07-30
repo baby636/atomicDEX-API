@@ -74,13 +74,17 @@ pub async fn z_send_htlc(
 }
 
 /// Sends HTLC output from the coin's my_z_addr
-pub async fn z_send_dex_fee(coin: &ZCoin, amount: BigDecimal) -> Result<ZTransaction, MmError<SendOutputsErr>> {
+pub async fn z_send_dex_fee(
+    coin: &ZCoin,
+    amount: BigDecimal,
+    uuid: &[u8],
+) -> Result<ZTransaction, MmError<SendOutputsErr>> {
     let dex_fee_amount = sat_from_big_decimal(&amount, coin.utxo_arc.decimals)?;
     let dex_fee_out = ZOutput {
         to_addr: coin.z_fields.dex_fee_addr.clone(),
         amount: Amount::from_u64(dex_fee_amount).map_err(|_| NumConversError::new("Invalid ZCash amount".into()))?,
         viewing_key: Some(DEX_FEE_OVK),
-        memo: Some(MemoBytes::from_bytes(&[7; 16]).expect("length < 512")),
+        memo: Some(MemoBytes::from_bytes(uuid).expect("uuid length < 512")),
     };
 
     let tx = coin.send_outputs(vec![], vec![dex_fee_out]).await?;

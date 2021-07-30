@@ -511,6 +511,7 @@ impl MakerSwap {
                     &DEX_FEE_ADDR_RAW_PUBKEY,
                     &fee_amount.clone().into(),
                     taker_coin_start_block,
+                    self.uuid.as_bytes(),
                 )
                 .compat()
                 .await

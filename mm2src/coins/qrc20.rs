@@ -578,7 +578,7 @@ impl UtxoCommonOps for Qrc20Coin {
 }
 
 impl SwapOps for Qrc20Coin {
-    fn send_taker_fee(&self, fee_addr: &[u8], amount: BigDecimal) -> TransactionFut {
+    fn send_taker_fee(&self, fee_addr: &[u8], amount: BigDecimal, _uuid: &[u8]) -> TransactionFut {
         let to_address = try_fus!(self.contract_address_from_raw_pubkey(fee_addr));
         let amount = try_fus!(wei_from_big_decimal(&amount, self.utxo.decimals));
         let transfer_output =
@@ -726,6 +726,7 @@ impl SwapOps for Qrc20Coin {
         fee_addr: &[u8],
         amount: &BigDecimal,
         min_block_number: u64,
+        _uuid: &[u8],
     ) -> Box<dyn Future<Item = (), Error = String> + Send> {
         let fee_tx = match fee_tx {
             TransactionEnum::UtxoTx(tx) => tx,
