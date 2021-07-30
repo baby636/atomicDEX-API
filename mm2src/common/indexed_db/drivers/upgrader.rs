@@ -1,6 +1,7 @@
 use crate::mm_error::prelude::*;
 use crate::stringify_js_error;
 use derive_more::Display;
+use js_sys::Array;
 use wasm_bindgen::prelude::*;
 use web_sys::{IdbDatabase, IdbIndexParameters, IdbObjectStore, IdbObjectStoreParameters, IdbTransaction};
 
@@ -66,6 +67,27 @@ impl TableUpgrader {
         params.unique(unique);
         self.object_store
             .create_index_with_str_and_optional_parameters(index, index, &params)
+            .map(|_| ())
+            .map_to_mm(|e| OnUpgradeError::ErrorCreatingIndex {
+                index: index.to_owned(),
+                description: stringify_js_error(&e),
+            })
+    }
+
+    /// Create an index with the multiple keys.
+    /// The key has to be a field of the table.
+    /// Such indexes are used to find records that satisfy constraints imposed on multiple fields.
+    pub fn create_multi_index(&self, index: &str, fields: &[&str], unique: bool) -> OnUpgradeResult<()> {
+        let mut params = IdbIndexParameters::new();
+        params.unique(unique);
+
+        let fields_key_path = Array::new();
+        for field in fields {
+            fields_key_path.push(&JsValue::from(*field));
+        }
+
+        self.object_store
+            .create_index_with_str_sequence_and_optional_parameters(index, &fields_key_path, &params)
             .map(|_| ())
             .map_to_mm(|e| OnUpgradeError::ErrorCreatingIndex {
                 index: index.to_owned(),

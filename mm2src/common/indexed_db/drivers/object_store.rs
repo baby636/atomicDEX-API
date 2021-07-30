@@ -1,4 +1,5 @@
-use super::{construct_event_closure, DbTransactionError, DbTransactionResult, ItemId};
+use super::{construct_event_closure, DbTransactionError, DbTransactionResult, InternalItem, ItemId};
+use crate::indexed_db::db_driver::cursor::IdbCursorBuilder;
 use crate::mm_error::prelude::*;
 use crate::stringify_js_error;
 use futures::channel::mpsc;
@@ -200,6 +201,18 @@ impl IdbObjectStoreImpl {
         Ok(())
     }
 
+    pub fn cursor_builder(&self, index_str: &str) -> DbTransactionResult<IdbCursorBuilder> {
+        let db_index = match self.object_store.index(index_str) {
+            Ok(index) => index,
+            Err(_) => {
+                return MmError::err(DbTransactionError::NoSuchIndex {
+                    index: index_str.to_owned(),
+                })
+            },
+        };
+        Ok(IdbCursorBuilder::new(db_index))
+    }
+
     async fn wait_for_request_complete(request: &IdbRequest) -> Result<JsValue, JsValue> {
         let (tx, mut rx) = mpsc::channel(2);
 
@@ -262,11 +275,4 @@ impl IdbObjectStoreImpl {
             _ => "Unknown".to_owned(),
         }
     }
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-struct InternalItem {
-    _item_id: ItemId,
-    #[serde(flatten)]
-    item: Json,
 }

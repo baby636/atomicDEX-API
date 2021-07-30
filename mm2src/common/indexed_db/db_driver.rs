@@ -11,6 +11,7 @@ use crate::mm_error::prelude::*;
 use crate::stringify_js_error;
 use futures::channel::mpsc;
 use js_sys::Array;
+use serde_json::Value as Json;
 use std::collections::HashSet;
 use std::fmt;
 use std::sync::Mutex;
@@ -18,6 +19,7 @@ use wasm_bindgen::prelude::*;
 use web_sys::{IdbDatabase, IdbTransactionMode};
 
 #[path = "drivers/builder.rs"] mod builder;
+#[path = "drivers/cursor/cursor.rs"] pub(super) mod cursor;
 #[path = "drivers/object_store.rs"] mod object_store;
 #[path = "drivers/transaction.rs"] mod transaction;
 #[path = "drivers/upgrader.rs"] mod upgrader;
@@ -32,6 +34,13 @@ lazy_static! {
 }
 
 pub type ItemId = u32;
+
+#[derive(Debug, Deserialize, Serialize)]
+struct InternalItem {
+    _item_id: ItemId,
+    #[serde(flatten)]
+    item: Json,
+}
 
 pub struct IdbDatabaseImpl {
     db: IdbDatabase,
