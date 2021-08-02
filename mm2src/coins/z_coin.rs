@@ -220,12 +220,14 @@ impl ZCoin {
             selected_notes_with_witness.push((decrypted_output.note.clone(), None));
         }
 
-        let mut tree = CommitmentTree::<Node>::empty();
+        let block_10k_tree = "01a000f49afc61fa3766ebc43a25c1343dac8033df315c62b62e16d5f6e23ec50c0140657b4a1b18d860b149badac6f8d96f8a3a6bce8e31509a37f3e7a86a56fa17060115c03674d2e7ea3515fa33c50a8d5e9fcc6dcf21cf51bc6077ebe1b021209a200160bd107eaac04e28344fabf2fbf4650cf68d7b171d172278eb535eefde97864501fb81bb35326ee68e7140665685cd78f3e986f89223e9ec09630135f914f8ec5f000195c83fd0c4114bf543efedd90b6c9de55e8deda447e1bba242e6b431826e60210107d4cbc6bd43ea3e0fe3ebc796c9eb439ea6dcbae42fd398ea291a7e0862a432";
+        let block_10k_tree = hex::decode(block_10k_tree).unwrap();
+        let mut tree = CommitmentTree::<Node>::read(block_10k_tree.as_slice()).unwrap();
         let mut root = [0u8; 32];
         tree.root().write(&mut root as &mut [u8]).unwrap();
         let default_root = Some(H256Json::from(root).reversed());
 
-        let mut processed_block = 0;
+        let mut processed_block = 10000;
         let native_client = match self.rpc_client() {
             UtxoRpcClientEnum::Native(native) => native,
             _ => panic!(),
