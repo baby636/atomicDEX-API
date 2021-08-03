@@ -1,5 +1,5 @@
 use super::{construct_event_closure, DbUpgrader, IdbDatabaseImpl, OnUpgradeError, OnUpgradeNeededCb, OPEN_DATABASES};
-use crate::log::debug;
+use crate::log::info;
 use crate::mm_error::prelude::*;
 use crate::stringify_js_error;
 use derive_more::Display;
@@ -72,7 +72,7 @@ impl IdbDatabaseBuilder {
     pub async fn build(self) -> InitDbResult<IdbDatabaseImpl> {
         Self::check_if_db_is_not_open(&self.db_name)?;
         let (table_names, on_upgrade_needed_handlers) = Self::tables_into_parts(self.tables)?;
-        debug!("Open '{}' database with tables: {:?}", self.db_name, table_names);
+        info!("Open '{}' database with tables: {:?}", self.db_name, table_names);
 
         let window = web_sys::window().expect("!window");
         let indexed_db = match window.indexed_db() {

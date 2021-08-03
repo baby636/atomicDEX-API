@@ -266,7 +266,7 @@ mod native_impl {
 #[cfg(target_arch = "wasm32")]
 mod wasm_impl {
     use super::*;
-    use crate::mm2::lp_swap::swap_db::{DbTransactionError, InitDbError, ItemId, SavedSwapTable};
+    use crate::mm2::lp_swap::swap_db::{DbTransactionError, InitDbError, SavedSwapTable};
     use crate::mm2::lp_swap::SwapsContext;
 
     impl From<DbTransactionError> for SavedSwapError {
@@ -354,7 +354,6 @@ mod tests {
     use crate::mm2::lp_swap::swap_db::{ItemId, SavedSwapTable};
     use crate::mm2::lp_swap::SwapsContext;
     use common::mm_ctx::MmCtxBuilder;
-    use common::new_uuid;
     use wasm_bindgen_test::*;
 
     wasm_bindgen_test_configure!(run_in_browser);

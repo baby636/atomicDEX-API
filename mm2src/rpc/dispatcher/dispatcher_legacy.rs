@@ -60,7 +60,7 @@ pub fn dispatcher(req: Json, ctx: MmArc) -> DispatcherRes {
         // Sorted alphanumerically (on the first latter) for readability.
         // "autoprice" => lp_autoprice (ctx, req),
         "active_swaps" => hyres(active_swaps_rpc(ctx, req)),
-        "all_swaps_uuids_by_filter" => all_swaps_uuids_by_filter(ctx, req),
+        "all_swaps_uuids_by_filter" => hyres(all_swaps_uuids_by_filter(ctx, req)),
         "ban_pubkey" => hyres(ban_pubkey_rpc(ctx, req)),
         "best_orders" => hyres(best_orders_rpc(ctx, req)),
         "buy" => hyres(buy(ctx, req)),

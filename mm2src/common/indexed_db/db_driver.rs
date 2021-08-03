@@ -6,7 +6,7 @@
 //! Since the wrappers represented below are not `Send`, it's strongly recommended NOT to use them directly.
 //! Please consider using a higher-level interface from `indexed_db.rs`.
 
-use crate::log::error;
+use crate::log::{error, info};
 use crate::mm_error::prelude::*;
 use crate::stringify_js_error;
 use futures::channel::mpsc;
@@ -79,6 +79,7 @@ impl IdbDatabaseImpl {
 
 impl Drop for IdbDatabaseImpl {
     fn drop(&mut self) {
+        info!("'{}' database has been closed", self.db_name);
         self.db.close();
         let mut open_databases = OPEN_DATABASES.lock().expect("!OPEN_DATABASES.lock()");
         open_databases.remove(&self.db_name);

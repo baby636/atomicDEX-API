@@ -107,9 +107,11 @@ pub mod seri;
 #[cfg(target_arch = "wasm32")]
 #[path = "indexed_db/indexed_db.rs"]
 pub mod indexed_db;
+
 #[cfg(target_arch = "wasm32")]
 #[path = "transport/wasm_http.rs"]
 pub mod wasm_http;
+
 #[cfg(target_arch = "wasm32")] pub mod wasm_rpc;
 #[cfg(target_arch = "wasm32")]
 #[path = "transport/wasm_ws.rs"]
@@ -139,6 +141,7 @@ use std::future::Future as Future03;
 use std::io::Write;
 use std::mem::{forget, size_of, zeroed};
 use std::net::SocketAddr;
+use std::num::NonZeroUsize;
 use std::ops::{Add, Deref, Div, RangeInclusive};
 use std::os::raw::{c_char, c_void};
 use std::panic::{set_hook, PanicInfo};
@@ -1803,6 +1806,19 @@ fn test_round_to() {
     assert_eq!(round_to(&BigDecimal::from(-0), 0), "0");
 }
 
+const fn ten() -> usize { 10 }
+
+fn one() -> NonZeroUsize { NonZeroUsize::new(1).unwrap() }
+
+#[derive(Debug, Deserialize)]
+pub struct PagingOptions {
+    #[serde(default = "ten")]
+    pub limit: usize,
+    #[serde(default = "one")]
+    pub page_number: NonZeroUsize,
+    pub from_uuid: Option<Uuid>,
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 pub fn new_uuid() -> Uuid { Uuid::new_v4() }
 
@@ -1811,7 +1827,7 @@ pub fn new_uuid() -> Uuid {
     use rand::RngCore;
     use uuid::{Builder, Variant, Version};
 
-    let mut rng = small_rng();
+    let mut rng = rand::thread_rng();
     let mut bytes = [0; 16];
 
     rng.fill_bytes(&mut bytes);

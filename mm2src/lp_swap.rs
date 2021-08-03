@@ -55,18 +55,16 @@
 //  marketmaker
 //
 
-#[cfg(not(target_arch = "wasm32"))]
-use crate::mm2::database::database_common::PagingOptions;
 use crate::mm2::lp_network::broadcast_p2p_msg;
 use async_std::sync as async_std_sync;
 use bigdecimal::BigDecimal;
 use coins::{lp_coinfind, MmCoinEnum, TradeFee, TransactionEnum};
-use common::{bits256, block_on, calc_total_pages,
+use common::{bits256, calc_total_pages,
              executor::{spawn, Timer},
              log::{error, info},
              mm_ctx::{from_ctx, MmArc},
              mm_number::MmNumber,
-             now_ms, rpc_response, var, HyRes};
+             now_ms, var, PagingOptions};
 use futures::future::{abortable, AbortHandle, TryFutureExt};
 use http::Response;
 use mm2_libp2p::{decode_signed, encode_and_sign, pub_sub_topic, TopicPrefix};
@@ -78,7 +76,6 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex, Weak};
-use std::thread;
 use uuid::Uuid;
 
 #[path = "lp_swap/maker_swap.rs"] mod maker_swap;
@@ -90,6 +87,7 @@ use uuid::Uuid;
 #[path = "lp_swap/check_balance.rs"] mod check_balance;
 #[path = "lp_swap/trade_preimage.rs"] mod trade_preimage;
 
+#[path = "lp_swap/my_swaps_db.rs"] mod my_swaps_db;
 #[path = "lp_swap/saved_swap.rs"] mod saved_swap;
 #[path = "lp_swap/swap_lock.rs"] mod swap_lock;
 
@@ -101,6 +99,7 @@ pub use check_balance::{check_other_coin_balance_for_swap, CheckBalanceError};
 use maker_swap::MakerSwapEvent;
 pub use maker_swap::{calc_max_maker_vol, check_balance_for_maker_swap, maker_swap_trade_preimage, run_maker_swap,
                      MakerSavedSwap, MakerSwap, MakerTradePreimage, RunMakerSwapInput};
+use my_swaps_db::{MySwaps, MySwapsOps};
 use pubkey_banning::BanReason;
 pub use pubkey_banning::{ban_pubkey_rpc, is_pubkey_banned, list_banned_pubkeys_rpc, unban_pubkeys_rpc};
 pub use saved_swap::{SavedSwap, SavedSwapError, SavedSwapIo, SavedSwapResult};
@@ -113,8 +112,7 @@ pub use trade_preimage::trade_preimage_rpc;
 pub const SWAP_PREFIX: TopicPrefix = "swap";
 
 cfg_wasm32! {
-    use common::indexed_db::{ConstructibleDb, DbLocked, DbNamespaceId};
-    use futures::lock::Mutex as AsyncMutex;
+    use common::indexed_db::{ConstructibleDb, DbLocked};
     use swap_db::{InitDbResult, SwapDb};
 
     pub type SwapDbLocked<'a> = DbLocked<'a, SwapDb>;
@@ -635,27 +633,17 @@ pub fn my_swaps_dir(ctx: &MmArc) -> PathBuf { ctx.dbdir().join("SWAPS").join("MY
 
 pub fn my_swap_file_path(ctx: &MmArc, uuid: &Uuid) -> PathBuf { my_swaps_dir(ctx).join(format!("{}.json", uuid)) }
 
-#[cfg(not(target_arch = "wasm32"))]
-pub fn insert_new_swap_to_db(
-    ctx: &MmArc,
+pub async fn insert_new_swap_to_db(
+    ctx: MmArc,
     my_coin: &str,
     other_coin: &str,
-    uuid: &str,
-    started_at: &str,
+    uuid: Uuid,
+    started_at: u64,
 ) -> Result<(), String> {
-    crate::mm2::database::my_swaps::insert_new_swap(ctx, my_coin, other_coin, uuid, started_at)
+    MySwaps::new(ctx)
+        .save_new_swap(my_coin, other_coin, uuid, started_at)
+        .await
         .map_err(|e| ERRL!("{}", e))
-}
-
-#[cfg(target_arch = "wasm32")]
-pub fn insert_new_swap_to_db(
-    _ctx: &MmArc,
-    _my_coin: &str,
-    _other_coin: &str,
-    _uuid: &str,
-    _started_at: &str,
-) -> Result<(), String> {
-    Ok(())
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -819,40 +807,27 @@ pub struct MySwapsFilter {
     pub to_timestamp: Option<u64>,
 }
 
-#[cfg(target_arch = "wasm32")]
-pub fn all_swaps_uuids_by_filter(_ctx: MmArc, _req: Json) -> HyRes {
-    Box::new(futures01::future::err::<Response<Vec<u8>>, String>(ERRL!(
-        "'all_swaps_uuids_by_filter' is only supported in native mode yet"
-    )))
-}
-
 // TODO: Should return the result from SQL like in order history. So it can be clear the exact started_at time
 // and the coins if they are not included in the filter request
 /// Returns *all* uuids of swaps, which match the selected filter.
-#[cfg(not(target_arch = "wasm32"))]
-pub fn all_swaps_uuids_by_filter(ctx: MmArc, req: Json) -> HyRes {
-    use crate::mm2::database::my_swaps::select_uuids_by_my_swaps_filter;
+pub async fn all_swaps_uuids_by_filter(ctx: MmArc, req: Json) -> Result<Response<Vec<u8>>, String> {
+    let filter: MySwapsFilter = try_s!(json::from_value(req));
+    let db_result = try_s!(MySwaps::new(ctx).my_recent_swaps_with_filters(&filter, None).await);
 
-    let filter: MySwapsFilter = try_h!(json::from_value(req));
-    let db_result = try_h!(select_uuids_by_my_swaps_filter(&ctx.sqlite_connection(), &filter, None));
-
-    rpc_response(
-        200,
-        json!({
-            "result": {
-                "uuids": db_result.uuids,
-                "my_coin": filter.my_coin,
-                "other_coin": filter.other_coin,
-                "from_timestamp": filter.from_timestamp,
-                "to_timestamp": filter.to_timestamp,
-                "found_records": db_result.uuids.len(),
-            },
-        })
-        .to_string(),
-    )
+    let res_js = json!({
+        "result": {
+            "uuids": db_result.uuids,
+            "my_coin": filter.my_coin,
+            "other_coin": filter.other_coin,
+            "from_timestamp": filter.from_timestamp,
+            "to_timestamp": filter.to_timestamp,
+            "found_records": db_result.uuids.len(),
+        },
+    });
+    let res = try_s!(json::to_vec(&res_js));
+    Ok(try_s!(Response::builder().body(res)))
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug, Deserialize)]
 pub struct MyRecentSwapsReq {
     #[serde(flatten)]
@@ -861,23 +836,24 @@ pub struct MyRecentSwapsReq {
     filter: MySwapsFilter,
 }
 
-/// TODO the last step in adding support this function to the wasm32 is to add integration 'my_swaps' DB.
-#[cfg(target_arch = "wasm32")]
-pub async fn my_recent_swaps(_ctx: MmArc, _req: Json) -> Result<Response<Vec<u8>>, String> {
-    ERR!("'my_recent_swaps' is only supported in native mode yet")
+#[derive(Debug, Default, PartialEq)]
+pub struct MyRecentSwapsUuids {
+    /// UUIDs of swaps matching the query
+    pub uuids: Vec<Uuid>,
+    /// Total count of swaps matching the query
+    pub total_count: usize,
+    /// The number of skipped UUIDs
+    pub skipped: usize,
 }
 
 /// Returns the data of recent swaps of `my` node.
-#[cfg(not(target_arch = "wasm32"))]
 pub async fn my_recent_swaps(ctx: MmArc, req: Json) -> Result<Response<Vec<u8>>, String> {
-    use crate::mm2::database::my_swaps::select_uuids_by_my_swaps_filter;
-
     let req: MyRecentSwapsReq = try_s!(json::from_value(req));
-    let db_result = try_s!(select_uuids_by_my_swaps_filter(
-        &ctx.sqlite_connection(),
-        &req.filter,
-        Some(&req.paging_options),
-    ));
+    let db_result = try_s!(
+        MySwaps::new(ctx.clone())
+            .my_recent_swaps_with_filters(&req.filter, Some(&req.paging_options))
+            .await
+    );
 
     // iterate over uuids trying to parse the corresponding files content and add to result vector
     let mut swaps = Vec::with_capacity(db_result.uuids.len());
@@ -944,8 +920,8 @@ pub async fn swap_kick_starts(ctx: MmArc) -> Result<HashSet<String>, String> {
 
         // kick-start the swap in a separate thread.
         #[cfg(not(target_arch = "wasm32"))]
-        thread::spawn(move || {
-            block_on(kickstart_thread_handler(
+        std::thread::spawn(move || {
+            common::block_on(kickstart_thread_handler(
                 ctx.clone(),
                 swap,
                 maker_coin_ticker,
@@ -1059,12 +1035,14 @@ pub async fn import_swaps(ctx: MmArc, req: Json) -> Result<Response<Vec<u8>>, St
             Ok(_) => {
                 if let Some(info) = swap.get_my_info() {
                     if let Err(e) = insert_new_swap_to_db(
-                        &ctx,
+                        ctx.clone(),
                         &info.my_coin,
                         &info.other_coin,
-                        &swap.uuid().to_string(),
-                        &info.started_at.to_string(),
-                    ) {
+                        *swap.uuid(),
+                        info.started_at,
+                    )
+                    .await
+                    {
                         error!("Error {} on new swap insertion", e);
                     }
                 }

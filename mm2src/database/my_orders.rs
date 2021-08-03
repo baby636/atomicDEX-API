@@ -3,13 +3,13 @@ use crate::mm2::lp_ordermatch::MyOrdersFilter;
 use crate::mm2::lp_ordermatch::{MakerOrder, TakerAction, TakerOrder};
 use common::log::debug;
 use common::mm_ctx::MmArc;
-use common::now_ms;
 use common::rusqlite::{Connection, Error as SqlError, Result as SqlResult, ToSql};
+use common::{now_ms, PagingOptions};
 use sql_builder::SqlBuilder;
 use std::convert::TryInto;
 use uuid::Uuid;
 
-use super::database_common::{offset_by_uuid, PagingOptions};
+use super::database_common::offset_by_uuid;
 
 const MY_ORDERS_TABLE: &str = "my_orders";
 

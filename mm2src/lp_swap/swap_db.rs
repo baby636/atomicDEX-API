@@ -1,13 +1,12 @@
 use async_trait::async_trait;
-use common::indexed_db::{DbIdentifier, DbInstance, DbUpgrader, IndexedDb, IndexedDbBuilder, OnUpgradeError,
-                         OnUpgradeResult, TableSignature};
-use common::mm_error::prelude::*;
-use derive_more::Display;
+use common::indexed_db::{DbIdentifier, DbInstance, DbUpgrader, IndexedDb, IndexedDbBuilder, OnUpgradeResult,
+                         TableSignature};
 use std::ops::Deref;
 use uuid::Uuid;
 
-pub use common::indexed_db::{DbTransactionError, DbTransactionResult, InitDbError, InitDbResult, ItemId};
-pub use tables::{SavedSwapTable, SwapLockTable};
+pub use common::indexed_db::{cursor_prelude, DbTransactionError, DbTransactionResult, InitDbError, InitDbResult,
+                             ItemId};
+pub use tables::{MySwapsTable, SavedSwapTable, SwapLockTable};
 
 const DB_NAME: &str = "swap";
 const DB_VERSION: u32 = 1;
@@ -25,6 +24,7 @@ impl DbInstance for SwapDb {
             .with_version(DB_VERSION)
             .with_table::<SwapLockTable>()
             .with_table::<SavedSwapTable>()
+            .with_table::<MySwapsTable>()
             .build()
             .await?;
         Ok(SwapDb { inner })
@@ -66,6 +66,33 @@ pub mod tables {
 
         fn on_upgrade_needed(upgrader: &DbUpgrader, old_version: u32, new_version: u32) -> OnUpgradeResult<()> {
             on_upgrade_swap_table_by_uuid_v1(upgrader, old_version, new_version, Self::table_name())
+        }
+    }
+
+    #[derive(Debug, Serialize, Deserialize, Eq, Ord, PartialEq, PartialOrd)]
+    pub struct MySwapsTable {
+        pub uuid: Uuid,
+        pub my_coin: String,
+        pub other_coin: String,
+        pub started_at: u32,
+    }
+
+    impl TableSignature for MySwapsTable {
+        fn table_name() -> &'static str { "my_swaps" }
+
+        fn on_upgrade_needed(upgrader: &DbUpgrader, old_version: u32, new_version: u32) -> OnUpgradeResult<()> {
+            match (old_version, new_version) {
+                (0, 1) => {
+                    let table = upgrader.create_table(Self::table_name())?;
+                    table.create_index("uuid", true)?;
+                    table.create_index("started_at", false)?;
+                    table.create_multi_index("with_my_coin", &["my_coin", "started_at"], false)?;
+                    table.create_multi_index("with_other_coin", &["other_coin", "started_at"], false)?;
+                    table.create_multi_index("with_my_other_coins", &["my_coin", "other_coin", "started_at"], false)?;
+                },
+                _ => (),
+            }
+            Ok(())
         }
     }
 

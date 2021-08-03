@@ -50,8 +50,9 @@
 //! although it is expected to be within the specified bounds.
 
 use super::TableSignature;
-use crate::indexed_db::db_driver::cursor::{CollectCursorAction, CollectItemAction, CursorBoundValue, CursorError,
-                                           CursorOps, CursorResult, DbFilter, IdbCursorBuilder};
+use crate::indexed_db::db_driver::cursor::{CollectCursorAction, CollectItemAction, CursorBoundValue, CursorOps,
+                                           DbFilter, IdbCursorBuilder};
+pub use crate::indexed_db::db_driver::cursor::{CursorError, CursorResult};
 use crate::mm_error::prelude::*;
 use crate::serde::de::DeserializeOwned;
 use async_trait::async_trait;

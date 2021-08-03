@@ -1,13 +1,13 @@
 /// This module contains code to work with my_swaps table in MM2 SQLite DB
-use crate::mm2::lp_swap::{MySwapsFilter, SavedSwap, SavedSwapIo};
+use crate::mm2::lp_swap::{MyRecentSwapsUuids, MySwapsFilter, SavedSwap, SavedSwapIo};
 use common::log::debug;
 use common::mm_ctx::MmArc;
 use common::rusqlite::{Connection, Error as SqlError, Result as SqlResult, ToSql};
+use common::PagingOptions;
 use sql_builder::SqlBuilder;
 use std::convert::TryInto;
-use uuid::Uuid;
 
-use super::database_common::{offset_by_uuid, PagingOptions};
+use super::database_common::offset_by_uuid;
 
 const MY_SWAPS_TABLE: &str = "my_swaps";
 
@@ -73,16 +73,6 @@ impl From<uuid::parser::ParseError> for SelectRecentSwapsUuidsErr {
     fn from(err: uuid::parser::ParseError) -> Self { SelectRecentSwapsUuidsErr::Parse(err) }
 }
 
-#[derive(Debug, Default)]
-pub struct RecentSwapsSelectSqlResult {
-    /// UUIDs of swaps matching the query
-    pub uuids: Vec<Uuid>,
-    /// Total count of swaps matching the query
-    pub total_count: usize,
-    /// The number of skipped UUIDs
-    pub skipped: usize,
-}
-
 /// Adds where clauses determined by MySwapsFilter
 fn apply_my_swaps_filter(builder: &mut SqlBuilder, params: &mut Vec<(&str, String)>, filter: &MySwapsFilter) {
     if let Some(my_coin) = &filter.my_coin {
@@ -110,7 +100,7 @@ pub fn select_uuids_by_my_swaps_filter(
     conn: &Connection,
     filter: &MySwapsFilter,
     paging_options: Option<&PagingOptions>,
-) -> SqlResult<RecentSwapsSelectSqlResult, SelectRecentSwapsUuidsErr> {
+) -> SqlResult<MyRecentSwapsUuids, SelectRecentSwapsUuidsErr> {
     let mut query_builder = SqlBuilder::select_from(MY_SWAPS_TABLE);
     let mut params = vec![];
     apply_my_swaps_filter(&mut query_builder, &mut params, filter);
@@ -126,7 +116,7 @@ pub fn select_uuids_by_my_swaps_filter(
     let total_count: isize = conn.query_row_named(&count_query, params_as_trait.as_slice(), |row| row.get(0))?;
     let total_count = total_count.try_into().expect("COUNT should always be >= 0");
     if total_count == 0 {
-        return Ok(RecentSwapsSelectSqlResult::default());
+        return Ok(MyRecentSwapsUuids::default());
     }
 
     // query the uuids finally
@@ -156,7 +146,7 @@ pub fn select_uuids_by_my_swaps_filter(
     let uuids: SqlResult<Vec<_>, _> = uuids.into_iter().map(|uuid| uuid.parse()).collect();
     let uuids = uuids?;
 
-    Ok(RecentSwapsSelectSqlResult {
+    Ok(MyRecentSwapsUuids {
         uuids,
         total_count,
         skipped,

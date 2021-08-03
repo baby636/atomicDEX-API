@@ -201,7 +201,7 @@ mod tests {
     use crate::mm2::lp_swap::swap_db::SwapLockTable;
     use crate::mm2::lp_swap::SwapsContext;
     use common::executor::Timer;
-    use common::indexed_db::{DbTable, ItemId};
+    use common::indexed_db::ItemId;
     use common::mm_ctx::{MmArc, MmCtxBuilder};
     use common::new_uuid;
     use common::now_ms;

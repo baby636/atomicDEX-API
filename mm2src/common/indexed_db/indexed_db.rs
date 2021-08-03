@@ -38,6 +38,11 @@ type DbEventTx = mpsc::UnboundedSender<internal::DbEvent>;
 type DbTransactionEventTx = mpsc::UnboundedSender<internal::DbTransactionEvent>;
 type DbTableEventTx = mpsc::UnboundedSender<internal::DbTableEvent>;
 
+pub mod cursor_prelude {
+    pub use crate::indexed_db::indexed_cursor::{CollectCursor, CursorError, CursorResult, WithBound, WithFilter,
+                                                WithOnly};
+}
+
 /// The database namespace identifier.
 /// This is used to distinguish the databases of one test from others.
 #[derive(Clone, Copy, Display, PartialEq)]

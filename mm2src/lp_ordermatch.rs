@@ -2438,13 +2438,7 @@ fn lp_connect_start_bob(ctx: MmArc, maker_match: MakerMatch, maker_order: MakerO
         );
 
         let now = now_ms() / 1000;
-        if let Err(e) = insert_new_swap_to_db(
-            &ctx,
-            maker_coin.ticker(),
-            taker_coin.ticker(),
-            &uuid.to_string(),
-            &now.to_string(),
-        ) {
+        if let Err(e) = insert_new_swap_to_db(ctx.clone(), maker_coin.ticker(), taker_coin.ticker(), uuid, now).await {
             error!("Error {} on new swap insertion", e);
         }
         let maker_swap = MakerSwap::new(
@@ -2526,13 +2520,7 @@ fn lp_connected_alice(ctx: MmArc, taker_request: TakerRequest, taker_match: Take
             uuid
         );
         let now = now_ms() / 1000;
-        if let Err(e) = insert_new_swap_to_db(
-            &ctx,
-            taker_coin.ticker(),
-            maker_coin.ticker(),
-            &uuid.to_string(),
-            &now.to_string(),
-        ) {
+        if let Err(e) = insert_new_swap_to_db(ctx.clone(), taker_coin.ticker(), maker_coin.ticker(), uuid, now).await {
             error!("Error {} on new swap insertion", e);
         }
         let taker_swap = TakerSwap::new(

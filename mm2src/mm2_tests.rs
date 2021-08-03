@@ -28,7 +28,6 @@ cfg_native! {
 }
 
 cfg_wasm32! {
-    use wasm_bindgen::prelude::*;
     use wasm_bindgen_test::*;
 
     wasm_bindgen_test_configure!(run_in_browser);
@@ -1274,23 +1273,6 @@ async fn trade_base_rel_electrum(
 
     log!("Waiting 3 seconds for nodes to broadcast their swaps data..");
     Timer::sleep(3.).await;
-
-    // TODO remove this when the swap db is fully functional
-    #[cfg(target_arch = "wasm32")]
-    if 1 == 1 {
-        for uuid in uuids.iter() {
-            mm_bob
-                .wait_for_log(300., |log| log.contains(&format!("[swap uuid={}] Finished", uuid)))
-                .await
-                .unwrap();
-
-            mm_alice
-                .wait_for_log(300., |log| log.contains(&format!("[swap uuid={}] Finished", uuid)))
-                .await
-                .unwrap();
-        }
-        return;
-    }
 
     #[cfg(not(target_arch = "wasm32"))]
     for uuid in uuids.iter() {
