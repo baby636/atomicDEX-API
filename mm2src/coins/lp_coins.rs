@@ -1274,7 +1274,10 @@ pub async fn lp_coininit(ctx: &MmArc, ticker: &str, req: &Json) -> Result<MmCoin
             token.into()
         },
         #[cfg(all(not(target_arch = "wasm32"), feature = "zhtlc"))]
-        CoinProtocol::ZHTLC => try_s!(z_coin_from_conf_and_request(ctx, ticker, &coins_en, req, secret).await).into(),
+        CoinProtocol::ZHTLC => {
+            let dbdir = ctx.dbdir();
+            try_s!(z_coin_from_conf_and_request(ctx, ticker, &coins_en, req, secret, dbdir).await).into()
+        },
     };
 
     let block_count = try_s!(coin.current_block().compat().await);

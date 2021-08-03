@@ -25,18 +25,22 @@ use keys::hash::H256;
 use keys::Public;
 use primitives::bytes::Bytes;
 use rpc::v1::types::{Bytes as BytesJson, Transaction as RpcTransaction, H256 as H256Json};
+use rusqlite::{Connection, Error as SqliteError};
 use script::{Builder as ScriptBuilder, Opcode, Script, TransactionInputSigner};
 use serde_json::Value as Json;
 use serialization::{deserialize, CoinVariant};
 use std::collections::HashMap;
 use std::convert::TryInto;
-use std::sync::Arc;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use zcash_client_backend::decrypt_transaction;
 use zcash_client_backend::encoding::{decode_payment_address, encode_extended_spending_key, encode_payment_address};
 use zcash_client_backend::wallet::AccountId;
+use zcash_primitives::consensus::{BlockHeight, H0};
 use zcash_primitives::memo::MemoBytes;
 use zcash_primitives::merkle_tree::{CommitmentTree, Hashable, IncrementalWitness};
 use zcash_primitives::sapling::keys::OutgoingViewingKey;
+use zcash_primitives::sapling::note_encryption::try_sapling_output_recovery;
 use zcash_primitives::sapling::Node;
 use zcash_primitives::transaction::builder::{Builder as ZTxBuilder, Error as ZTxBuilderError};
 use zcash_primitives::transaction::components::{Amount, TxOut};
@@ -51,8 +55,6 @@ use z_htlc::{z_p2sh_spend, z_send_dex_fee, z_send_htlc};
 mod z_rpc;
 use crate::z_coin::z_rpc::ZUnspent;
 use z_rpc::ZRpcOps;
-use zcash_primitives::consensus::{BlockHeight, H0};
-use zcash_primitives::sapling::note_encryption::try_sapling_output_recovery;
 
 #[cfg(test)] mod z_coin_tests;
 
@@ -68,6 +70,8 @@ pub struct ZCoinFields {
     z_tx_prover: LocalTxProver,
     /// Mutex preventing concurrent transaction generation/same input usage
     z_tx_mutex: AsyncMutex<()>,
+    /// SQLite connection that is used to cache Sapling data for shielded transactions creation
+    sqlite: Mutex<Connection>,
 }
 
 impl std::fmt::Debug for ZCoinFields {
@@ -311,6 +315,11 @@ impl AsRef<UtxoCoinFields> for ZCoin {
 pub enum ZCoinBuildError {
     BuilderError(String),
     GetAddressError,
+    SqliteError(SqliteError),
+}
+
+impl From<SqliteError> for ZCoinBuildError {
+    fn from(err: SqliteError) -> ZCoinBuildError { ZCoinBuildError::SqliteError(err) }
 }
 
 pub async fn z_coin_from_conf_and_request(
@@ -319,9 +328,19 @@ pub async fn z_coin_from_conf_and_request(
     conf: &Json,
     req: &Json,
     secp_priv_key: &[u8],
+    db_dir_path: PathBuf,
 ) -> Result<ZCoin, MmError<ZCoinBuildError>> {
     let z_key = ExtendedSpendingKey::master(secp_priv_key);
-    z_coin_from_conf_and_request_with_z_key(ctx, ticker, conf, req, secp_priv_key, z_key).await
+    z_coin_from_conf_and_request_with_z_key(ctx, ticker, conf, req, secp_priv_key, db_dir_path, z_key).await
+}
+
+fn init_db(sql: &Connection) -> Result<(), SqliteError> {
+    const INIT_SAPLING_CACHE_TABLE: &str = "CREATE TABLE IF NOT EXISTS sapling_cache (
+        height INTEGER NOT NULL PRIMARY KEY,
+        cmus BLOB NOT NULL
+    );";
+
+    sql.execute::<&[&str]>(INIT_SAPLING_CACHE_TABLE, &[]).map(|_| ())
 }
 
 async fn z_coin_from_conf_and_request_with_z_key(
@@ -330,11 +349,16 @@ async fn z_coin_from_conf_and_request_with_z_key(
     conf: &Json,
     req: &Json,
     secp_priv_key: &[u8],
+    mut db_dir_path: PathBuf,
     z_spending_key: ExtendedSpendingKey,
 ) -> Result<ZCoin, MmError<ZCoinBuildError>> {
     let builder = UtxoArcBuilder::new(ctx, ticker, conf, req, secp_priv_key);
     let utxo_arc = builder.build().await.map_to_mm(ZCoinBuildError::BuilderError)?;
 
+    db_dir_path.push(format!("{}_CACHE.db", ticker));
+
+    let sqlite = Connection::open(db_dir_path)?;
+    init_db(&sqlite)?;
     let (_, my_z_addr) = z_spending_key
         .default_address()
         .map_err(|_| MmError::new(ZCoinBuildError::GetAddressError))?;
@@ -353,6 +377,7 @@ async fn z_coin_from_conf_and_request_with_z_key(
         z_spending_key,
         z_tx_prover,
         z_tx_mutex: AsyncMutex::new(()),
+        sqlite: Mutex::new(sqlite),
     };
     Ok(ZCoin {
         utxo_arc,

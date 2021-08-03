@@ -805,6 +805,7 @@ dependencies = [
  "rand 0.7.3",
  "rlp 0.3.0",
  "rpc",
+ "rusqlite",
  "rust-ini",
  "rustls",
  "script",
