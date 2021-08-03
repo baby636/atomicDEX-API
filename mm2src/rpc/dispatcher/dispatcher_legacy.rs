@@ -82,16 +82,7 @@ pub fn dispatcher(req: Json, ctx: MmArc) -> DispatcherRes {
         "get_trade_fee" => hyres(get_trade_fee(ctx, req)),
         // "fundvalue" => lp_fundvalue (ctx, req, false),
         "help" => help(),
-        "import_swaps" => {
-            #[cfg(not(target_arch = "wasm32"))]
-            {
-                Box::new(CPUPOOL.spawn_fn(move || hyres(import_swaps(ctx, req))))
-            }
-            #[cfg(target_arch = "wasm32")]
-            {
-                return DispatcherRes::NoMatch(req);
-            }
-        },
+        "import_swaps" => spawn_highload_future(move || hyres(import_swaps(ctx, req))),
         "kmd_rewards_info" => hyres(kmd_rewards_info(ctx)),
         // "inventory" => inventory (ctx, req),
         "list_banned_pubkeys" => hyres(list_banned_pubkeys_rpc(ctx)),
@@ -108,16 +99,7 @@ pub fn dispatcher(req: Json, ctx: MmArc) -> DispatcherRes {
         "orderbook" => hyres(orderbook_rpc(ctx, req)),
         "orderbook_depth" => hyres(orderbook_depth_rpc(ctx, req)),
         "sim_panic" => hyres(sim_panic(req)),
-        "recover_funds_of_swap" => {
-            #[cfg(not(target_arch = "wasm32"))]
-            {
-                Box::new(CPUPOOL.spawn_fn(move || hyres(recover_funds_of_swap(ctx, req))))
-            }
-            #[cfg(target_arch = "wasm32")]
-            {
-                return DispatcherRes::NoMatch(req);
-            }
-        },
+        "recover_funds_of_swap" => spawn_highload_future(move || hyres(recover_funds_of_swap(ctx, req))),
         "sell" => hyres(sell(ctx, req)),
         "show_priv_key" => hyres(show_priv_key(ctx, req)),
         "send_raw_transaction" => hyres(send_raw_transaction(ctx, req)),
@@ -134,6 +116,24 @@ pub fn dispatcher(req: Json, ctx: MmArc) -> DispatcherRes {
         "withdraw" => hyres(into_legacy::withdraw(ctx, req)),
         _ => return DispatcherRes::NoMatch(req),
     })
+}
+
+/// There is no need to spawn the future in WASM
+/// because the `dispatcher` function is called in a spawned future already.
+#[cfg(target_arch = "wasm32")]
+fn spawn_highload_future<F>(f: F) -> HyRes
+where
+    F: FnOnce() -> HyRes + Send + 'static,
+{
+    f()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn spawn_highload_future<F>(f: F) -> HyRes
+where
+    F: FnOnce() -> HyRes + Send + 'static,
+{
+    Box::new(CPUPOOL.spawn_fn(f))
 }
 
 pub async fn process_single_request(
