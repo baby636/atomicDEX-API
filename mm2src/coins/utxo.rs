@@ -1701,7 +1701,7 @@ where
     let mut result = Vec::with_capacity(unspents.len());
     for unspent in unspents {
         let tx_hash: H256Json = unspent.outpoint.hash.reversed().into();
-        let tx_info = try_s!(rpc_client.get_verbose_transaction(tx_hash.clone()).compat().await);
+        let tx_info = try_s!(rpc_client.get_verbose_transaction(&tx_hash).compat().await);
 
         let value = unspent.value;
         let locktime = tx_info.locktime as u64;

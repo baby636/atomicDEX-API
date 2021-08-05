@@ -114,13 +114,13 @@ impl Clone for UtxoRpcClientEnum {
 impl UtxoRpcClientEnum {
     pub fn wait_for_confirmations(
         &self,
-        tx: &UtxoTx,
+        tx_hash: H256Json,
+        expiry_height: u32,
         confirmations: u32,
         requires_notarization: bool,
         wait_until: u64,
         check_every: u64,
     ) -> Box<dyn Future<Item = (), Error = String> + Send> {
-        let tx = tx.clone();
         let selfi = self.clone();
         let fut = async move {
             loop {
@@ -128,16 +128,12 @@ impl UtxoRpcClientEnum {
                     return ERR!(
                         "Waited too long until {} for transaction {:?} to be confirmed {} times",
                         wait_until,
-                        tx,
+                        tx_hash,
                         confirmations
                     );
                 }
 
-                match selfi
-                    .get_verbose_transaction(tx.hash().reversed().into())
-                    .compat()
-                    .await
-                {
+                match selfi.get_verbose_transaction(&tx_hash).compat().await {
                     Ok(t) => {
                         let tx_confirmations = if requires_notarization {
                             t.confirmations
@@ -149,18 +145,30 @@ impl UtxoRpcClientEnum {
                         } else {
                             info!(
                                 "Waiting for tx {:?} confirmations, now {}, required {}, requires_notarization {}",
-                                tx.hash().reversed(),
-                                tx_confirmations,
-                                confirmations,
-                                requires_notarization
+                                tx_hash, tx_confirmations, confirmations, requires_notarization
                             )
                         }
                     },
-                    Err(e) => error!(
-                        "Error {:?} getting the transaction {:?}, retrying in 10 seconds",
-                        e,
-                        tx.hash().reversed()
-                    ),
+                    Err(e) => {
+                        if expiry_height > 0 {
+                            let block = match selfi.get_block_count().compat().await {
+                                Ok(b) => b,
+                                Err(e) => {
+                                    error!("Error {} getting block number, retrying in 10 seconds", e);
+                                    Timer::sleep(check_every as f64).await;
+                                    continue;
+                                },
+                            };
+
+                            if block > expiry_height as u64 {
+                                return ERR!("The transaction {:?} has expired, current block {}", tx_hash, block);
+                            }
+                        }
+                        error!(
+                            "Error {:?} getting the transaction {:?}, retrying in 10 seconds",
+                            e, tx_hash
+                        )
+                    },
                 }
 
                 Timer::sleep(check_every as f64).await;
@@ -232,7 +240,7 @@ pub trait UtxoRpcClientOps: fmt::Debug + Send + Sync + 'static {
 
     fn get_transaction_bytes(&self, txid: H256Json) -> UtxoRpcFut<BytesJson>;
 
-    fn get_verbose_transaction(&self, txid: H256Json) -> UtxoRpcFut<RpcTransaction>;
+    fn get_verbose_transaction(&self, txid: &H256Json) -> UtxoRpcFut<RpcTransaction>;
 
     fn get_block_count(&self) -> UtxoRpcFut<u64>;
 
@@ -601,7 +609,7 @@ impl UtxoRpcClientOps for NativeClient {
         Box::new(self.get_raw_transaction_bytes(txid).map_to_mm_fut(UtxoRpcError::from))
     }
 
-    fn get_verbose_transaction(&self, txid: H256Json) -> UtxoRpcFut<RpcTransaction> {
+    fn get_verbose_transaction(&self, txid: &H256Json) -> UtxoRpcFut<RpcTransaction> {
         Box::new(self.get_raw_transaction_verbose(txid).map_to_mm_fut(UtxoRpcError::from))
     }
 
@@ -776,7 +784,7 @@ impl NativeClientImpl {
 
     /// https://developer.bitcoin.org/reference/rpc/getrawtransaction.html
     /// Always returns verbose transaction
-    fn get_raw_transaction_verbose(&self, txid: H256Json) -> RpcRes<RpcTransaction> {
+    fn get_raw_transaction_verbose(&self, txid: &H256Json) -> RpcRes<RpcTransaction> {
         let verbose = 1;
         rpc_func!(self, "getrawtransaction", txid, verbose)
     }
@@ -1528,7 +1536,7 @@ impl UtxoRpcClientOps for ElectrumClient {
 
     /// https://electrumx.readthedocs.io/en/latest/protocol-methods.html#blockchain-transaction-get
     /// returns verbose transaction by default
-    fn get_verbose_transaction(&self, txid: H256Json) -> UtxoRpcFut<RpcTransaction> {
+    fn get_verbose_transaction(&self, txid: &H256Json) -> UtxoRpcFut<RpcTransaction> {
         let verbose = true;
         Box::new(rpc_func!(self, "blockchain.transaction.get", txid, verbose).map_to_mm_fut(UtxoRpcError::from))
     }

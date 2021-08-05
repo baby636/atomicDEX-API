@@ -169,6 +169,8 @@ lazy_static! {
 
 pub auto trait NotSame {}
 impl<X> !NotSame for (X, X) {}
+// Makes the error conversion work for structs/enums containing Box<dyn ...>
+impl<T: ?Sized> NotSame for Box<T> {}
 
 /// Converts u64 satoshis to f64
 pub fn sat_to_f(sat: u64) -> f64 { sat as f64 / SATOSHIS as f64 }

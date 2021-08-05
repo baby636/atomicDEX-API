@@ -1131,6 +1131,20 @@ async fn trade_base_rel_electrum(
     wait_log_re!(mm_bob, 22., ">>>>>>>>> DEX stats ");
     wait_log_re!(mm_alice, 22., ">>>>>>>>> DEX stats ");
 
+    #[cfg(feature = "zhtlc")]
+    {
+        let rmd = rmd160_from_passphrase(&bob_passphrase);
+        let bob_zombie_cache_path = mm_bob.folder.join("DB").join(hex::encode(rmd)).join("ZOMBIE_CACHE.db");
+        std::fs::copy("./mm2src/coins/for_tests/ZOMBIE_CACHE.db", bob_zombie_cache_path).unwrap();
+
+        let rmd = rmd160_from_passphrase(&alice_passphrase);
+        let alice_zombie_cache_path = mm_alice
+            .folder
+            .join("DB")
+            .join(hex::encode(rmd))
+            .join("ZOMBIE_CACHE.db");
+        std::fs::copy("./mm2src/coins/for_tests/ZOMBIE_CACHE.db", alice_zombie_cache_path).unwrap();
+    }
     // Enable coins on Bob side. Print the replies in case we need the address.
     let rc = enable_coins_eth_electrum(&mm_bob, &["http://195.201.0.6:8565"]).await;
     log! ({"enable_coins (bob): {:?}", rc});
@@ -1302,7 +1316,7 @@ async fn trade_base_rel_electrum(
 #[cfg(not(target_arch = "wasm32"))]
 fn trade_test_electrum_and_eth_coins() {
     let pairs: &[_] = if cfg!(feature = "zhtlc") {
-        &[("ZOMBIE", "RICK")]
+        &[("RICK", "ZOMBIE")]
     } else {
         &[("ETH", "JST")]
     };

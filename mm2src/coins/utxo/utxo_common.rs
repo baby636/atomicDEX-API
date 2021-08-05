@@ -568,7 +568,7 @@ where
         let tx = coin
             .as_ref()
             .rpc_client
-            .get_verbose_transaction(prev_hash)
+            .get_verbose_transaction(&prev_hash)
             .compat()
             .await?;
         if let Ok(output_interest) =
@@ -1071,7 +1071,7 @@ where
         let tx_from_rpc = try_s!(
             coin.as_ref()
                 .rpc_client
-                .get_verbose_transaction(tx.hash().reversed().into())
+                .get_verbose_transaction(&tx.hash().reversed().into())
                 .compat()
                 .await
         );
@@ -1359,8 +1359,14 @@ pub fn wait_for_confirmations(
 ) -> Box<dyn Future<Item = (), Error = String> + Send> {
     let mut tx: UtxoTx = try_fus!(deserialize(tx).map_err(|e| ERRL!("{:?}", e)));
     tx.tx_hash_algo = coin.tx_hash_algo;
-    coin.rpc_client
-        .wait_for_confirmations(&tx, confirmations as u32, requires_nota, wait_until, check_every)
+    coin.rpc_client.wait_for_confirmations(
+        tx.hash().reversed().into(),
+        tx.expiry_height,
+        confirmations as u32,
+        requires_nota,
+        wait_until,
+        check_every,
+    )
 }
 
 pub fn wait_for_output_spend(
@@ -1928,13 +1934,7 @@ where
 {
     let ticker = &coin.as_ref().conf.ticker;
     let hash = H256Json::from(hash);
-    let verbose_tx = try_s!(
-        coin.as_ref()
-            .rpc_client
-            .get_verbose_transaction(hash.clone())
-            .compat()
-            .await
-    );
+    let verbose_tx = try_s!(coin.as_ref().rpc_client.get_verbose_transaction(&hash).compat().await);
     let mut tx: UtxoTx = try_s!(deserialize(verbose_tx.hex.as_slice()).map_err(|e| ERRL!("{:?}", e)));
     tx.tx_hash_algo = coin.as_ref().tx_hash_algo;
 
@@ -2059,7 +2059,7 @@ where
             let verbose = coin
                 .as_ref()
                 .rpc_client
-                .get_verbose_transaction(tx_hash.clone())
+                .get_verbose_transaction(&tx_hash)
                 .compat()
                 .await?;
             let tx = HistoryUtxoTx {
@@ -2479,7 +2479,7 @@ pub async fn get_verbose_transaction_from_cache_or_rpc(
         Some(p) => p.clone(),
         _ => {
             // the coin doesn't support TX local cache, don't try to load from cache and don't cache it
-            let tx = coin.rpc_client.get_verbose_transaction(txid.clone()).compat().await?;
+            let tx = coin.rpc_client.get_verbose_transaction(&txid).compat().await?;
             return Ok(VerboseTransactionFrom::Rpc(tx));
         },
     };
@@ -2491,7 +2491,7 @@ pub async fn get_verbose_transaction_from_cache_or_rpc(
         _ => (),
     }
 
-    let tx = coin.rpc_client.get_verbose_transaction(txid).compat().await?;
+    let tx = coin.rpc_client.get_verbose_transaction(&txid).compat().await?;
     Ok(VerboseTransactionFrom::Rpc(tx))
 }
 

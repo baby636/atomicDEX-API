@@ -943,7 +943,7 @@ impl TakerSwap {
     }
 
     async fn wait_for_maker_payment(&self) -> Result<(Option<TakerSwapCommand>, Vec<TakerSwapEvent>), String> {
-        const MAKER_PAYMENT_WAIT_TIMEOUT: u64 = 180;
+        const MAKER_PAYMENT_WAIT_TIMEOUT: u64 = 600;
         let tx_hex = self.r().taker_fee.as_ref().unwrap().tx_hex.0.clone();
         let msg = SwapMsg::TakerFee(tx_hex);
         let abort_send_handle = broadcast_swap_message_every(
