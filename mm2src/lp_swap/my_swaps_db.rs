@@ -227,13 +227,13 @@ mod wasm_impl {
                 },
             };
 
-            let uuids: BTreeSet<Uuid> = items.into_iter().map(|item| item.uuid).collect();
+            let uuids: BTreeSet<OrderedUuid> = items.into_iter().map(OrderedUuid::from).collect();
             match paging_options {
                 Some(paging) => Ok(take_according_to_paging_opts(uuids, paging)),
                 None => {
                     let total_count = uuids.len();
                     Ok(MyRecentSwapsUuids {
-                        uuids: uuids.into_iter().collect(),
+                        uuids: uuids.into_iter().map(|ordered| ordered.uuid).collect(),
                         total_count,
                         skipped: 0,
                     })
@@ -243,19 +243,29 @@ mod wasm_impl {
     }
 
     pub(super) fn take_according_to_paging_opts(
-        mut uuids: BTreeSet<Uuid>,
+        uuids: BTreeSet<OrderedUuid>,
         paging: &PagingOptions,
     ) -> MyRecentSwapsUuids {
         let total_count = uuids.len();
 
         // page_number is ignored if from_uuid is set
-        if let Some(uuid) = paging.from_uuid {
-            let actual_uuids = uuids.split_off(&uuid);
-            // Currently, `uuids` is a list of skipped ids.
-            let skipped = uuids.len();
+        if let Some(expected_uuid) = paging.from_uuid {
+            let mut skipped = 0;
+            let uuids = uuids
+                .into_iter()
+                .map(|ordered| ordered.uuid)
+                .skip_while(|uuid| {
+                    let skip = uuid != &expected_uuid;
+                    if skip {
+                        skipped += 1;
+                    }
+                    skip
+                })
+                .take(paging.limit)
+                .collect();
 
             return MyRecentSwapsUuids {
-                uuids: actual_uuids.into_iter().take(paging.limit).collect(),
+                uuids,
                 total_count,
                 skipped,
             };
@@ -263,9 +273,30 @@ mod wasm_impl {
 
         let skipped = (paging.page_number.get() - 1) * paging.limit;
         MyRecentSwapsUuids {
-            uuids: uuids.iter().skip(skipped).take(paging.limit).copied().collect(),
+            uuids: uuids
+                .into_iter()
+                .skip(skipped)
+                .take(paging.limit)
+                .map(|ordered| ordered.uuid)
+                .collect(),
             total_count,
             skipped,
+        }
+    }
+
+    /// A swap identifier is ordered first by `started_at` and then by `uuid`.
+    #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+    pub(super) struct OrderedUuid {
+        pub started_at: u32,
+        pub uuid: Uuid,
+    }
+
+    impl From<MySwapsTable> for OrderedUuid {
+        fn from(item: MySwapsTable) -> OrderedUuid {
+            OrderedUuid {
+                started_at: item.started_at,
+                uuid: item.uuid,
+            }
         }
     }
 }
@@ -312,7 +343,7 @@ mod wasm_tests {
         let ctx = MmCtxBuilder::new().with_test_db_namespace().into_mm_arc();
         let my_swaps = MySwaps::new(ctx);
 
-        let mut expected_uuids = Vec::with_capacity(total_count);
+        let mut expected_uuids = BTreeSet::new();
         let mut rng = rand::thread_rng();
 
         for _ in 0..total_count {
@@ -322,7 +353,10 @@ mod wasm_tests {
             let started_at = rng.gen_range(timestamp_range.start, timestamp_range.end);
 
             if is_applied(&filters, my_coin, other_coin, started_at) {
-                expected_uuids.push(uuid);
+                expected_uuids.insert(OrderedUuid {
+                    started_at: started_at as u32,
+                    uuid,
+                });
             }
             my_swaps
                 .save_new_swap(my_coin, other_coin, uuid, started_at)
@@ -335,12 +369,9 @@ mod wasm_tests {
             .await
             .expect("!MySwaps::my_recent_swaps_with_filters");
 
-        // `actual.uuids` has to be sorted already since `IdbCursor` iterates over the items in ascending order.
-        expected_uuids.sort();
-
         let expected_total_count = expected_uuids.len();
         let expected = MyRecentSwapsUuids {
-            uuids: expected_uuids,
+            uuids: expected_uuids.into_iter().map(|ordered| ordered.uuid).collect(),
             total_count: expected_total_count,
             skipped: 0,
         };
@@ -351,19 +382,23 @@ mod wasm_tests {
     fn test_take_according_to_paging_opts() {
         register_wasm_log();
 
-        let uuids: BTreeSet<Uuid> = [
-            "2f9afe84-7a89-4194-8947-45fba563118f",
-            "3447b727-fe93-4357-8e5a-8cf2699b7e86",
-            "41383f43-46a5-478c-9386-3b2cce0aca20",
-            "49c79ea4-e1eb-4fb2-a0ef-265bded0b77f",
-            "5acb0e63-8b26-469e-81df-7dd9e4a9ad15",
-            "8f5b267a-efa8-49d6-a92d-ec0523cca891",
-            "983ce732-62a8-4a44-b4ac-7e4271adc977",
-            "af5e0383-97f6-4408-8c03-a8eb8d17e46d",
-            "c52659d7-4e13-41f5-9c1a-30cc2f646033",
+        let uuids: BTreeSet<OrderedUuid> = [
+            (1, "49c79ea4-e1eb-4fb2-a0ef-265bded0b77f"),
+            (2, "2f9afe84-7a89-4194-8947-45fba563118f"),
+            (3, "41383f43-46a5-478c-9386-3b2cce0aca20"),
+            (4, "5acb0e63-8b26-469e-81df-7dd9e4a9ad15"),
+            (5, "3447b727-fe93-4357-8e5a-8cf2699b7e86"),
+            // ordered by uuid
+            (6, "8f5b267a-efa8-49d6-a92d-ec0523cca891"),
+            (6, "983ce732-62a8-4a44-b4ac-7e4271adc977"),
+            (7, "c52659d7-4e13-41f5-9c1a-30cc2f646033"),
+            (8, "af5e0383-97f6-4408-8c03-a8eb8d17e46d"),
         ]
         .iter()
-        .map(|uuid| Uuid::parse_str(uuid).unwrap())
+        .map(|(started_at, uuid)| OrderedUuid {
+            started_at: *started_at,
+            uuid: Uuid::parse_str(uuid).unwrap(),
+        })
         .collect();
 
         let paging = PagingOptions {
@@ -391,8 +426,8 @@ mod wasm_tests {
         let actual = take_according_to_paging_opts(uuids.clone(), &paging);
         let expected = MyRecentSwapsUuids {
             uuids: vec![
-                "49c79ea4-e1eb-4fb2-a0ef-265bded0b77f".parse().unwrap(),
                 "5acb0e63-8b26-469e-81df-7dd9e4a9ad15".parse().unwrap(),
+                "3447b727-fe93-4357-8e5a-8cf2699b7e86".parse().unwrap(),
                 "8f5b267a-efa8-49d6-a92d-ec0523cca891".parse().unwrap(),
             ],
             total_count: uuids.len(),
