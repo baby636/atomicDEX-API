@@ -23,6 +23,7 @@
 #![cfg_attr(target_arch = "wasm32", allow(unused_imports))]
 
 use common::crash_reports::init_crash_reports;
+use common::fs::safe_slurp;
 use common::log::LogLevel;
 use common::mm_ctx::MmCtxBuilder;
 use common::{block_on, double_panic_crash};
@@ -299,7 +300,7 @@ fn on_update_config(args: &[OsString]) -> Result<(), String> {
     let src_path = args.get(2).ok_or(ERRL!("Expect path to the source coins config."))?;
     let dst_path = args.get(3).ok_or(ERRL!("Expect destination path."))?;
 
-    let config = try_s!(common::safe_slurp(src_path));
+    let config = try_s!(safe_slurp(src_path));
     let mut config: Json = try_s!(json::from_slice(&config));
 
     let result = if config.is_array() {

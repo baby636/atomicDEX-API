@@ -135,9 +135,9 @@ mod native_impl {
     use crate::mm2::lp_swap::maker_swap::{stats_maker_swap_dir, stats_maker_swap_file_path};
     use crate::mm2::lp_swap::taker_swap::{stats_taker_swap_dir, stats_taker_swap_file_path};
     use crate::mm2::lp_swap::{my_swap_file_path, my_swaps_dir};
-    use async_std::fs;
+    use async_std::fs as async_fs;
+    use common::fs::read_dir_async;
     use common::log::error;
-    use common::read_dir_async;
     use futures::AsyncWriteExt;
     use serde::de::DeserializeOwned;
     use serde::Serialize;
@@ -201,7 +201,7 @@ mod native_impl {
     where
         Swap: DeserializeOwned,
     {
-        let content = match fs::read(path).await {
+        let content = match async_fs::read(path).await {
             Ok(content) => content,
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
             Err(e) => return MmError::err(SavedSwapError::ErrorLoading(e.to_string())),
@@ -248,7 +248,7 @@ mod native_impl {
         let content = json::to_vec(swap).map_to_mm(|e| SavedSwapError::ErrorSerializing(e.to_string()))?;
 
         let fs_fut = async {
-            let mut file = fs::File::create(&path).await?;
+            let mut file = async_fs::File::create(&path).await?;
             file.write_all(&content).await?;
             file.flush().await?;
             Ok(())

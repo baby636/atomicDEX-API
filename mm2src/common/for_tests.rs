@@ -22,7 +22,7 @@ cfg_wasm32! {
 cfg_native! {
     use crate::block_on;
     use crate::log::dashboard_path;
-    use crate::slurp;
+    use crate::fs::slurp;
     use crate::wio::{slurp_req, POOL};
     use chrono::{Local, TimeZone};
     use bytes::Bytes;

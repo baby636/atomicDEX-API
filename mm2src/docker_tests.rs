@@ -9,6 +9,7 @@
 #![recursion_limit = "512"]
 
 #[cfg(test)] use docker_tests::docker_tests_runner;
+
 #[cfg(test)]
 #[macro_use]
 extern crate common;
@@ -99,12 +100,11 @@ mod docker_tests {
     use coins::utxo::utxo_standard::{utxo_standard_coin_from_conf_and_request, UtxoStandardCoin};
     use coins::utxo::{coin_daemon_data_dir, dhash160, zcash_params_path, UtxoCoinFields, UtxoCommonOps};
     use coins::{FoundSwapTxSpend, MarketCoinOps, MmCoin, SwapOps, TransactionEnum, WithdrawRequest};
-    use common::for_tests::enable_electrum;
+    use common::for_tests::{enable_electrum, enable_native, mm_dump, new_mm2_temp_folder_path, MarketMakerIt};
+    use common::fs::file_lock::FileLock;
+    use common::mm_ctx::{MmArc, MmCtxBuilder};
     use common::mm_number::MmNumber;
     use common::{block_on, now_ms};
-    use common::{file_lock::FileLock,
-                 for_tests::{enable_native, mm_dump, new_mm2_temp_folder_path, MarketMakerIt},
-                 mm_ctx::{MmArc, MmCtxBuilder}};
     use futures01::Future;
     use keys::{KeyPair, Private};
     use primitives::hash::H160;

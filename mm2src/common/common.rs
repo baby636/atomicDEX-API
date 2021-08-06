@@ -92,8 +92,6 @@ pub mod big_int_str;
 pub mod crash_reports;
 pub mod custom_futures;
 pub mod duplex_mutex;
-pub mod file_lock;
-#[cfg(not(target_arch = "wasm32"))] pub mod for_c;
 pub mod for_tests;
 pub mod iguana_utils;
 pub mod mm_ctx;
@@ -118,6 +116,7 @@ pub mod wasm_http;
 pub mod wasm_ws;
 
 use atomic::Atomic;
+use backtrace::SymbolName;
 use bigdecimal::BigDecimal;
 use futures::compat::Future01CompatExt;
 use futures::future::FutureExt;
@@ -133,10 +132,8 @@ use serde::{de, ser};
 use serde_bytes::ByteBuf;
 use serde_json::{self as json, Value as Json};
 use std::collections::HashMap;
-use std::ffi::{CStr, OsStr};
+use std::ffi::CStr;
 use std::fmt::{self, Write as FmtWrite};
-use std::fs;
-use std::fs::DirEntry;
 use std::future::Future as Future03;
 use std::io::Write;
 use std::mem::{forget, size_of, zeroed};
@@ -153,6 +150,12 @@ use uuid::Uuid;
 
 pub use serde;
 
+#[cfg(not(target_arch = "wasm32"))] pub mod for_c;
+
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "fs/fs.rs"]
+pub mod fs;
+
 cfg_native! {
     pub use gstuff::{now_float, now_ms};
     pub use rusqlite;
@@ -162,7 +165,6 @@ cfg_native! {
     use http::Request;
     use libc::{free, malloc};
     use std::env;
-    use std::io::Read;
     use std::path::PathBuf;
 }
 
@@ -367,7 +369,7 @@ impl<'a> AsRef<Path> for RaiiRm<'a> {
     fn as_ref(&self) -> &Path { self.0 }
 }
 impl<'a> Drop for RaiiRm<'a> {
-    fn drop(&mut self) { let _ = fs::remove_file(self); }
+    fn drop(&mut self) { let _ = std::fs::remove_file(self); }
 }
 
 /// Using a static buffer in order to minimize the chance of heap and stack allocations in the signal handler.
@@ -1438,8 +1440,6 @@ where
     futures::executor::block_on(f)
 }
 
-use backtrace::SymbolName;
-
 #[cfg(target_arch = "wasm32")]
 pub fn now_ms() -> u64 { js_sys::Date::now() as u64 }
 
@@ -1451,108 +1451,13 @@ pub fn now_float() -> f64 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub fn slurp(path: &dyn AsRef<Path>) -> Result<Vec<u8>, String> { Ok(gstuff::slurp(path)) }
-
-#[cfg(not(target_arch = "wasm32"))]
-pub fn safe_slurp(path: &dyn AsRef<Path>) -> Result<Vec<u8>, String> {
-    let mut file = match std::fs::File::open(path) {
-        Ok(f) => f,
-        Err(ref err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(err) => return ERR!("Can't open {:?}: {}", path.as_ref(), err),
-    };
-    let mut buf = Vec::new();
-    try_s!(file.read_to_end(&mut buf));
-    Ok(buf)
-}
-
-#[cfg(not(target_arch = "wasm32"))]
 pub fn temp_dir() -> PathBuf { env::temp_dir() }
-
-#[cfg(not(target_arch = "wasm32"))]
-pub fn remove_file(path: &dyn AsRef<Path>) -> Result<(), String> {
-    try_s!(fs::remove_file(path));
-    Ok(())
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-pub fn write(path: &dyn AsRef<Path>, contents: &dyn AsRef<[u8]>) -> Result<(), String> {
-    try_s!(fs::write(path, contents));
-    Ok(())
-}
-
-/// Read a folder asynchronously and return a list of files.
-#[cfg(not(target_arch = "wasm32"))]
-pub async fn read_dir_async<P: AsRef<Path>>(dir: P) -> Result<Vec<PathBuf>, String> {
-    use futures::StreamExt;
-
-    let mut result = Vec::new();
-    let mut entries = try_s!(async_std::fs::read_dir(dir.as_ref()).await);
-
-    while let Some(entry) = entries.next().await {
-        let entry = match entry {
-            Ok(entry) => entry,
-            Err(e) => {
-                log::error!("Error '{}' reading from dir {}", e, dir.as_ref().display());
-                continue;
-            },
-        };
-        result.push(entry.path().into());
-    }
-    Ok(result)
-}
-
-/// Read a folder and return a list of files with their last-modified ms timestamps.
-#[cfg(not(target_arch = "wasm32"))]
-pub fn read_dir(dir: &dyn AsRef<Path>) -> Result<Vec<(u64, PathBuf)>, String> {
-    use std::time::UNIX_EPOCH;
-
-    let entries = try_s!(dir.as_ref().read_dir())
-        .filter_map(|dir_entry| {
-            let entry = match dir_entry {
-                Ok(ent) => ent,
-                Err(e) => {
-                    log!("Error " (e) " reading from dir " (dir.as_ref().display()));
-                    return None;
-                },
-            };
-
-            let metadata = match entry.metadata() {
-                Ok(m) => m,
-                Err(e) => {
-                    log!("Error " (e) " getting file " (entry.path().display()) " meta");
-                    return None;
-                },
-            };
-
-            let m_time = match metadata.modified() {
-                Ok(time) => time,
-                Err(e) => {
-                    log!("Error " (e) " getting file " (entry.path().display()) " m_time");
-                    return None;
-                },
-            };
-
-            let lm = m_time.duration_since(UNIX_EPOCH).expect("!duration_since").as_millis();
-            assert!(lm < u64::max_value() as u128);
-            let lm = lm as u64;
-
-            let path = entry.path();
-            if path.extension() == Some(OsStr::new("json")) {
-                Some((lm, path))
-            } else {
-                None
-            }
-        })
-        .collect();
-
-    Ok(entries)
-}
 
 /// If the `MM_LOG` variable is present then tries to open that file.  
 /// Prints a warning to `stdout` if there's a problem opening the file.  
 /// Returns `None` if `MM_LOG` variable is not present or if the specified path can't be opened.
 #[cfg(not(target_arch = "wasm32"))]
-fn open_log_file() -> Option<fs::File> {
+fn open_log_file() -> Option<std::fs::File> {
     let mm_log = match var("MM_LOG") {
         Ok(v) => v,
         Err(_) => return None,
@@ -1564,7 +1469,7 @@ fn open_log_file() -> Option<fs::File> {
         return None;
     }
 
-    match fs::OpenOptions::new().append(true).create(true).open(&mm_log) {
+    match std::fs::OpenOptions::new().append(true).create(true).open(&mm_log) {
         Ok(f) => Some(f),
         Err(err) => {
             println!("open_log_file] Can't open {}: {}", mm_log, err);
@@ -1578,7 +1483,7 @@ pub fn writeln(line: &str) {
     use std::panic::catch_unwind;
 
     lazy_static! {
-        static ref LOG_FILE: Mutex<Option<fs::File>> = Mutex::new(open_log_file());
+        static ref LOG_FILE: Mutex<Option<std::fs::File>> = Mutex::new(open_log_file());
     }
 
     // `catch_unwind` protects the tests from error
@@ -1981,26 +1886,6 @@ fn test_first_char_to_upper() {
     assert_eq!("K", first_char_to_upper("k"));
     assert_eq!("Komodo", first_char_to_upper("komodo"));
     assert_eq!(".komodo", first_char_to_upper(".komodo"));
-}
-
-pub fn json_dir_entries(path: &dyn AsRef<Path>) -> Result<Vec<DirEntry>, String> {
-    Ok(try_s!(path.as_ref().read_dir())
-        .filter_map(|dir_entry| {
-            let entry = match dir_entry {
-                Ok(ent) => ent,
-                Err(e) => {
-                    log!("Error " (e) " reading from dir " (path.as_ref().display()));
-                    return None;
-                },
-            };
-
-            if entry.path().extension() == Some(OsStr::new("json")) {
-                Some(entry)
-            } else {
-                None
-            }
-        })
-        .collect())
 }
 
 /// Calculates the median of the set represented as slice

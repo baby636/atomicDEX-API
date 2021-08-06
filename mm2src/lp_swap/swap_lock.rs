@@ -32,7 +32,7 @@ pub trait SwapLockOps: Sized {
 mod native_lock {
     use super::*;
     use crate::mm2::lp_swap::my_swaps_dir;
-    use common::file_lock::{FileLock, FileLockError};
+    use common::fs::file_lock::{FileLock, FileLockError};
     use std::path::PathBuf;
 
     impl From<FileLockError> for SwapLockError {

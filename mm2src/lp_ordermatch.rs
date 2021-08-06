@@ -29,7 +29,7 @@ use common::executor::{spawn, Timer};
 use common::log::error;
 use common::mm_ctx::{from_ctx, MmArc, MmWeak};
 use common::mm_number::{Fraction, MmNumber};
-use common::{bits256, json_dir_entries, log, new_uuid, now_ms};
+use common::{bits256, log, new_uuid, now_ms};
 use derive_more::Display;
 use futures::{compat::Future01CompatExt, lock::Mutex as AsyncMutex, StreamExt, TryFutureExt};
 use gstuff::slurp;
@@ -69,7 +69,7 @@ pub use orderbook_depth::orderbook_depth_rpc;
 pub use orderbook_rpc::orderbook_rpc;
 
 cfg_native! {
-    use common::{remove_file, write};
+    use common::fs::{write, json_dir_entries, remove_file};
 }
 
 #[path = "lp_ordermatch/best_orders.rs"] mod best_orders;
