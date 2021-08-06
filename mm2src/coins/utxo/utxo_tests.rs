@@ -740,7 +740,7 @@ fn test_withdraw_kmd_rewards_impl(
         .mock_safe(move |_fields| MockResult::Return(Box::pin(futures::future::ok(current_mtp))));
     NativeClient::get_verbose_transaction.mock_safe(move |_coin, txid| {
         let expected: H256Json = hex::decode(tx_hash).unwrap().as_slice().into();
-        assert_eq!(txid, expected);
+        assert_eq!(*txid, expected);
         MockResult::Return(Box::new(futures01::future::ok(verbose.clone())))
     });
 
@@ -968,7 +968,7 @@ fn test_electrum_rpc_client_error() {
     let client = electrum_client_for_test(&["electrum1.cipig.net:10060"]);
 
     let empty_hash = H256Json::default();
-    let err = client.get_verbose_transaction(empty_hash).wait().unwrap_err();
+    let err = client.get_verbose_transaction(&empty_hash).wait().unwrap_err();
 
     // use the static string instead because the actual error message cannot be obtain
     // by serde_json serialization
@@ -1650,7 +1650,7 @@ fn test_ordered_mature_unspents_from_cache_impl(
         "electrum2.cipig.net:10017",
         "electrum3.cipig.net:10017",
     ]);
-    let mut verbose = client.get_verbose_transaction(tx_hash.clone()).wait().unwrap();
+    let mut verbose = client.get_verbose_transaction(&tx_hash).wait().unwrap();
     verbose.confirmations = cached_confs;
     verbose.height = cached_height;
 
@@ -2450,7 +2450,7 @@ fn firo_lelantus_tx() {
         "electrumx02.firo.org:50001",
         "electrumx03.firo.org:50001",
     ]);
-    let _tx = electrum.get_verbose_transaction(tx_hash).wait().unwrap();
+    let _tx = electrum.get_verbose_transaction(&tx_hash).wait().unwrap();
 }
 
 #[test]

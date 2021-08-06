@@ -41,7 +41,7 @@ pub async fn z_send_htlc(
     let htlc_address = Address {
         prefix: coin.utxo_arc.conf.p2sh_addr_prefix,
         t_addr_prefix: coin.utxo_arc.conf.p2sh_t_addr_prefix,
-        hash: script_hash.clone(),
+        hash: script_hash,
         checksum_type: coin.utxo_arc.conf.checksum_type,
         addr_format: UtxoAddressFormat::Standard,
         hrp: None,

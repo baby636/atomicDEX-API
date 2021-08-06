@@ -3,7 +3,7 @@ use crate::utxo::rpc_clients::{UnspentInfo, UtxoRpcClientEnum, UtxoRpcClientOps,
 use crate::utxo::utxo_common::{big_decimal_from_sat_unsigned, payment_script, UtxoArcBuilder};
 use crate::utxo::{sat_from_big_decimal, utxo_common, ActualTxFee, AdditionalTxData, Address, FeePolicy, HistoryUtxoTx,
                   HistoryUtxoTxMap, RecentlySpentOutPoints, UtxoArc, UtxoCoinBuilder, UtxoCoinFields, UtxoCommonOps,
-                  VerboseTransactionFrom};
+                  UtxoWeak, VerboseTransactionFrom};
 use crate::Transaction;
 use crate::{BalanceFut, CoinBalance, FeeApproxStage, FoundSwapTxSpend, HistorySyncState, MarketCoinOps, MmCoin,
             NegotiateSwapContractAddrErr, NumConversError, SwapOps, TradeFee, TradePreimageFut, TradePreimageResult,
@@ -27,6 +27,7 @@ use keys::hash::H256;
 use keys::Public;
 use primitives::bytes::Bytes;
 use rpc::v1::types::{Bytes as BytesJson, Transaction as RpcTransaction, H256 as H256Json};
+use rusqlite::types::Type;
 use rusqlite::{Connection, Error as SqliteError, Row, ToSql, NO_PARAMS};
 use script::{Builder as ScriptBuilder, Opcode, Script, TransactionInputSigner};
 use serde_json::Value as Json;
@@ -35,7 +36,7 @@ use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use zcash_client_backend::decrypt_transaction;
 use zcash_client_backend::encoding::{decode_payment_address, encode_extended_spending_key, encode_payment_address};
 use zcash_client_backend::wallet::AccountId;
@@ -177,6 +178,7 @@ impl ZCoin {
 
     pub fn rpc_client(&self) -> &UtxoRpcClientEnum { &self.utxo_arc.rpc_client }
 
+    #[allow(dead_code)]
     async fn my_z_unspents_ordered(&self) -> UtxoRpcResult<Vec<ZUnspent>> {
         let mut unspents = self
             .z_rpc()
@@ -268,7 +270,7 @@ impl ZCoin {
                 .iter()
                 .find(|out| out.index as u32 == unspent.out_index)
                 .or_mm_err(|| SendOutputsErr::DecryptedOutputNotFound)?;
-            let witness = self.get_unspent_witness(&decrypted_output.note, height as u32)?;
+            let witness = self.get_unspent_witness(&decrypted_output.note, height as u32).await?;
             selected_notes_with_witness.push((decrypted_output.note.clone(), witness));
         }
 
@@ -328,15 +330,24 @@ impl ZCoin {
 
     fn sqlite_conn(&self) -> MutexGuard<'_, Connection> { self.z_fields.sqlite.lock().unwrap() }
 
-    pub fn get_unspent_witness(
+    pub async fn get_unspent_witness(
         &self,
         note: &Note,
         tx_height: u32,
     ) -> Result<IncrementalWitness<Node>, MmError<GetUnspentWitnessErr>> {
-        let states = query_states_after_height(&self.sqlite_conn(), tx_height)?;
-        if states.is_empty() {
-            return MmError::err(GetUnspentWitnessErr::EmptyDbResult);
-        }
+        let mut attempts = 0;
+        let states = loop {
+            let states = query_states_after_height(&self.sqlite_conn(), tx_height)?;
+            if states.is_empty() {
+                if attempts > 2 {
+                    return MmError::err(GetUnspentWitnessErr::EmptyDbResult);
+                }
+                attempts += 1;
+                Timer::sleep(10.).await;
+            } else {
+                break states;
+            }
+        };
 
         let mut tree = states[0].prev_tree_state.clone();
         let mut witness = None::<IncrementalWitness<Node>>;
@@ -362,6 +373,17 @@ impl ZCoin {
         }
 
         witness.or_mm_err(|| GetUnspentWitnessErr::OutputCmuNotFoundInCache)
+    }
+
+    fn into_weak_parts(self) -> (UtxoWeak, Weak<ZCoinFields>) {
+        (self.utxo_arc.downgrade(), Arc::downgrade(&self.z_fields))
+    }
+
+    fn from_weak_parts(utxo: &UtxoWeak, z_fields: &Weak<ZCoinFields>) -> Option<Self> {
+        let utxo_arc = utxo.upgrade()?;
+        let z_fields = z_fields.upgrade()?;
+
+        Some(ZCoin { utxo_arc, z_fields })
     }
 }
 
@@ -416,10 +438,13 @@ impl TryFrom<&Row<'_>> for SaplingBlockState {
         let prev_state_bytes: Vec<u8> = row.get(1)?;
         let cmus_bytes: Vec<u8> = row.get(2)?;
 
-        let prev_tree_state = CommitmentTree::read(prev_state_bytes.as_slice()).unwrap();
+        let prev_tree_state = CommitmentTree::read(prev_state_bytes.as_slice())
+            .map_err(|e| SqliteError::FromSqlConversionFailure(1, Type::Blob, Box::new(e)))?;
 
         let mut reader = Reader::from_read(cmus_bytes.as_slice());
-        let cmus = reader.read_list().unwrap();
+        let cmus = reader
+            .read_list()
+            .map_err(|e| SqliteError::FromSqlConversionFailure(2, Type::Blob, Box::new(e)))?;
         Ok(SaplingBlockState {
             height,
             prev_tree_state,
@@ -437,14 +462,18 @@ fn query_latest_block(conn: &Connection) -> Result<SaplingBlockState, SqliteErro
     })
 }
 
+#[allow(clippy::needless_question_mark)]
 fn query_states_after_height(conn: &Connection, height: u32) -> Result<Vec<SaplingBlockState>, SqliteError> {
     const GET_BLOCK_STATES_AFTER_HEIGHT: &str =
         "SELECT height, prev_tree_state, cmus from sapling_cache WHERE height >= ?1 ORDER BY height ASC;";
 
     let mut statement = conn.prepare(GET_BLOCK_STATES_AFTER_HEIGHT)?;
+
+    #[allow(clippy::redundant_closure)]
     let rows: Result<Vec<_>, _> = statement
         .query_map(&[height.to_sql()?], |row: &Row<'_>| SaplingBlockState::try_from(row))?
         .collect();
+
     Ok(rows?)
 }
 
@@ -470,21 +499,23 @@ async fn sapling_state_cache_loop(coin: ZCoin) {
         Ok(state) => {
             let mut tree = state.prev_tree_state;
             for cmu in state.cmus {
-                tree.append(Node::new(cmu.take())).unwrap();
+                tree.append(Node::new(cmu.take())).expect("Commitment tree not full");
             }
             (state.height, tree)
         },
         Err(_) => (0, CommitmentTree::empty()),
     };
 
+    let (utxo_weak, z_fields_weak) = coin.into_weak_parts();
+
     let zero_root = Some(H256Json::default());
-    loop {
+    while let Some(coin) = ZCoin::from_weak_parts(&utxo_weak, &z_fields_weak) {
         coin.z_fields.sapling_state_synced.store(false, AtomicOrdering::Relaxed);
         let current_block = match coin.rpc_client().get_block_count().compat().await {
             Ok(b) => b,
             Err(e) => {
                 log::error!("Error {} on getting block count", e);
-                Timer::sleep(30.).await;
+                Timer::sleep(10.).await;
                 continue;
             },
         };
@@ -494,25 +525,35 @@ async fn sapling_state_cache_loop(coin: ZCoin) {
             _ => unimplemented!("Implemented only for native client"),
         };
         while processed_height as u64 <= current_block {
-            let block_hash = native_client
-                .get_block_hash(processed_height as u64)
-                .compat()
-                .await
-                .unwrap();
-            let block = native_client.get_block(block_hash).compat().await.unwrap();
+            let block = match native_client.get_block_by_height(processed_height as u64).await {
+                Ok(b) => b,
+                Err(e) => {
+                    log::error!("Error {} on getting block", e);
+                    Timer::sleep(1.).await;
+                    continue;
+                },
+            };
             let current_sapling_root = current_tree.root();
             let mut root_bytes = [0u8; 32];
-            current_sapling_root.write(&mut root_bytes as &mut [u8]).unwrap();
+            current_sapling_root
+                .write(&mut root_bytes as &mut [u8])
+                .expect("Root len is 32 bytes");
 
             let current_sapling_root = Some(H256::from(root_bytes).reversed().into());
             if current_sapling_root != block.final_sapling_root && block.final_sapling_root != zero_root {
                 let prev_tree_state = current_tree.clone();
                 let mut cmus = Vec::new();
                 for hash in block.tx {
-                    let tx = native_client.get_transaction_bytes(hash).compat().await.unwrap();
-                    let tx: UtxoTx = deserialize(tx.as_slice()).unwrap();
+                    let tx = native_client
+                        .get_transaction_bytes(hash)
+                        .compat()
+                        .await
+                        .expect("Panic here to avoid storing invalid tree state to the DB");
+                    let tx: UtxoTx = deserialize(tx.as_slice()).expect("Panic here to avoid invalid tree state");
                     for output in tx.shielded_outputs {
-                        current_tree.append(Node::new(output.cmu.clone().take())).unwrap();
+                        current_tree
+                            .append(Node::new(output.cmu.take()))
+                            .expect("Commitment tree not full");
                         cmus.push(output.cmu);
                     }
                 }
@@ -522,11 +563,12 @@ async fn sapling_state_cache_loop(coin: ZCoin) {
                     prev_tree_state,
                     cmus,
                 };
-                insert_block_state(&coin.sqlite_conn(), state_to_insert).unwrap();
+                insert_block_state(&coin.sqlite_conn(), state_to_insert).expect("Insertion should not fail");
             }
             processed_height += 1;
         }
         coin.z_fields.sapling_state_synced.store(true, AtomicOrdering::Relaxed);
+        drop(coin);
         Timer::sleep(10.).await;
     }
 }
@@ -712,7 +754,7 @@ impl SwapOps for ZCoin {
         let redeem_script = payment_script(
             time_lock,
             &*dhash160(secret),
-            &Public::from_slice(taker_pub).unwrap(),
+            &try_fus!(Public::from_slice(taker_pub)),
             self.utxo_arc.key_pair.public(),
         );
         let script_data = ScriptBuilder::default()
@@ -740,7 +782,7 @@ impl SwapOps for ZCoin {
         let redeem_script = payment_script(
             time_lock,
             &*dhash160(secret),
-            &Public::from_slice(maker_pub).unwrap(),
+            &try_fus!(Public::from_slice(maker_pub)),
             self.utxo_arc.key_pair.public(),
         );
         let script_data = ScriptBuilder::default()
@@ -769,7 +811,7 @@ impl SwapOps for ZCoin {
             time_lock,
             secret_hash,
             self.utxo_arc.key_pair.public(),
-            &Public::from_slice(maker_pub).unwrap(),
+            &try_fus!(Public::from_slice(maker_pub)),
         );
         let script_data = ScriptBuilder::default().push_opcode(Opcode::OP_1).into_script();
         let selfi = self.clone();
@@ -794,7 +836,7 @@ impl SwapOps for ZCoin {
             time_lock,
             secret_hash,
             self.utxo_arc.key_pair.public(),
-            &Public::from_slice(taker_pub).unwrap(),
+            &try_fus!(Public::from_slice(taker_pub)),
         );
         let script_data = ScriptBuilder::default().push_opcode(Opcode::OP_1).into_script();
         let selfi = self.clone();

@@ -739,6 +739,13 @@ impl NativeClient {
     }
 }
 
+impl NativeClient {
+    pub async fn get_block_by_height(&self, height: u64) -> UtxoRpcResult<VerboseBlock> {
+        let block_hash = self.get_block_hash(height).compat().await?;
+        self.get_block(block_hash).compat().await
+    }
+}
+
 #[cfg_attr(test, mockable)]
 impl NativeClientImpl {
     /// https://developer.bitcoin.org/reference/rpc/importaddress

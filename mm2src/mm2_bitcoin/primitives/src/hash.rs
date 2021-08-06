@@ -6,6 +6,7 @@ use std::{cmp, fmt, ops, str};
 
 macro_rules! impl_hash {
     ($name: ident, $size: expr) => {
+        #[derive(Copy)]
         #[repr(C)]
         pub struct $name([u8; $size]);
 

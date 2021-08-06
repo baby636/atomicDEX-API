@@ -282,7 +282,7 @@ impl RecentlySpentOutPoints {
                 if output.script_pubkey == self.for_script_pubkey {
                     Some(CachedUnspentInfo {
                         outpoint: OutPoint {
-                            hash: spend_tx_hash.clone(),
+                            hash: spend_tx_hash,
                             index: index as u32,
                         },
                         value: output.value,
@@ -689,7 +689,7 @@ impl From<Arc<UtxoCoinFields>> for UtxoArc {
 
 impl UtxoArc {
     /// Returns weak reference to the inner UtxoCoinFields
-    fn downgrade(&self) -> UtxoWeak {
+    pub fn downgrade(&self) -> UtxoWeak {
         let weak = Arc::downgrade(&self.0);
         UtxoWeak(weak)
     }
@@ -703,7 +703,7 @@ impl From<Weak<UtxoCoinFields>> for UtxoWeak {
 }
 
 impl UtxoWeak {
-    fn upgrade(&self) -> Option<UtxoArc> { self.0.upgrade().map(UtxoArc::from) }
+    pub fn upgrade(&self) -> Option<UtxoArc> { self.0.upgrade().map(UtxoArc::from) }
 }
 
 // We can use a shared UTXO lock for all UTXO coins at 1 time.
