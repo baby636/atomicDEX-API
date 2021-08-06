@@ -23,7 +23,6 @@
 #![cfg_attr(target_arch = "wasm32", allow(unused_imports))]
 
 use common::crash_reports::init_crash_reports;
-use common::fs::safe_slurp;
 use common::log::LogLevel;
 use common::mm_ctx::MmCtxBuilder;
 use common::{block_on, double_panic_crash};
@@ -297,6 +296,8 @@ pub fn run_lp_main(first_arg: Option<&str>, ctx_cb: &dyn Fn(u32)) -> Result<(), 
 
 #[cfg(not(target_arch = "wasm32"))]
 fn on_update_config(args: &[OsString]) -> Result<(), String> {
+    use common::fs::safe_slurp;
+
     let src_path = args.get(2).ok_or(ERRL!("Expect path to the source coins config."))?;
     let dst_path = args.get(3).ok_or(ERRL!("Expect destination path."))?;
 
