@@ -151,7 +151,7 @@ pub struct CoinbaseTransactionInput {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct SignedTransactionOutput {
     /// Output value in BTC
-    pub value: f64,
+    pub value: Option<f64>,
     /// Output index
     pub n: u32,
     /// Output script
@@ -160,7 +160,7 @@ pub struct SignedTransactionOutput {
 }
 
 impl SignedTransactionOutput {
-    pub fn is_empty(&self) -> bool { self.value == 0.0 && self.script.is_empty() }
+    pub fn is_empty(&self) -> bool { self.value == Some(0.0) && self.script.is_empty() }
 }
 
 /// Transaction
@@ -490,7 +490,7 @@ mod tests {
     #[test]
     fn signed_transaction_output_serialize() {
         let txout = SignedTransactionOutput {
-            value: 777.79,
+            value: Some(777.79),
             n: 12,
             script: TransactionOutputScript {
                 asm: "Hello, world!!!".to_owned(),
@@ -512,7 +512,7 @@ mod tests {
     #[test]
     fn signed_transaction_output_deserialize() {
         let txout = SignedTransactionOutput {
-            value: 777.79,
+            value: Some(777.79),
             n: 12,
             script: TransactionOutputScript {
                 asm: "Hello, world!!!".to_owned(),
