@@ -1,4 +1,4 @@
-use crate::mm2::lp_swap::{MyRecentSwapsUuids, MySwapsFilter};
+use super::{MyRecentSwapsUuids, MySwapsFilter};
 use async_trait::async_trait;
 use common::mm_ctx::MmArc;
 use common::mm_error::prelude::*;
@@ -95,7 +95,7 @@ mod native_impl {
 mod wasm_impl {
     use super::*;
     use crate::mm2::lp_swap::swap_db::cursor_prelude::*;
-    use crate::mm2::lp_swap::swap_db::{DbTransactionError, InitDbError, MySwapsTable};
+    use crate::mm2::lp_swap::swap_db::{DbTransactionError, InitDbError, MySwapsFiltersTable};
     use crate::mm2::lp_swap::SwapsContext;
     use std::collections::BTreeSet;
     use uuid::Uuid;
@@ -160,9 +160,9 @@ mod wasm_impl {
             let swap_ctx = SwapsContext::from_ctx(&self.ctx).map_to_mm(MySwapsError::InternalError)?;
             let db = swap_ctx.swap_db().await?;
             let transaction = db.transaction().await?;
-            let my_swaps_table = transaction.table::<MySwapsTable>().await?;
+            let my_swaps_table = transaction.table::<MySwapsFiltersTable>().await?;
 
-            let item = MySwapsTable {
+            let item = MySwapsFiltersTable {
                 uuid,
                 my_coin: my_coin.to_owned(),
                 other_coin: other_coin.to_owned(),
@@ -180,7 +180,7 @@ mod wasm_impl {
             let swap_ctx = SwapsContext::from_ctx(&self.ctx).map_to_mm(MySwapsError::InternalError)?;
             let db = swap_ctx.swap_db().await?;
             let transaction = db.transaction().await?;
-            let my_swaps_table = transaction.table::<MySwapsTable>().await?;
+            let my_swaps_table = transaction.table::<MySwapsFiltersTable>().await?;
 
             let from_timestamp = filter.from_timestamp.map(|t| t as u32).unwrap_or_default();
             let to_timestamp = filter.to_timestamp.map(|t| t as u32).unwrap_or(u32::MAX);
@@ -291,8 +291,8 @@ mod wasm_impl {
         pub uuid: Uuid,
     }
 
-    impl From<MySwapsTable> for OrderedUuid {
-        fn from(item: MySwapsTable) -> OrderedUuid {
+    impl From<MySwapsFiltersTable> for OrderedUuid {
+        fn from(item: MySwapsFiltersTable) -> OrderedUuid {
             OrderedUuid {
                 started_at: item.started_at,
                 uuid: item.uuid,

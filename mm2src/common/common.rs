@@ -182,6 +182,8 @@ lazy_static! {
 
 pub auto trait NotSame {}
 impl<X> !NotSame for (X, X) {}
+// Makes the error conversion work for structs/enums containing Box<dyn ...>
+impl<T: ?Sized> NotSame for Box<T> {}
 
 /// Converts u64 satoshis to f64
 pub fn sat_to_f(sat: u64) -> f64 { sat as f64 / SATOSHIS as f64 }
@@ -605,6 +607,8 @@ pub type SlurpRes = Result<(StatusCode, HeaderMap, Vec<u8>), String>;
 /// NB: By default the future is executed on the shared asynchronous reactor (`CORE`),
 /// the handler is responsible for spawning the future on another reactor if it doesn't fit the `CORE` well.
 pub type HyRes = Box<dyn Future<Item = Response<Vec<u8>>, Error = String> + Send>;
+
+pub type BoxFut<T, E> = Box<dyn Future<Item = T, Error = E> + Send>;
 
 pub trait HttpStatusCode {
     fn status_code(&self) -> StatusCode;

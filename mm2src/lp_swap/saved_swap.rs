@@ -6,7 +6,6 @@ use coins::lp_coinfind;
 use common::mm_ctx::MmArc;
 use common::mm_error::prelude::*;
 use derive_more::Display;
-use serde_json as json;
 use uuid::Uuid;
 
 pub type SavedSwapResult<T> = Result<T, MmError<SavedSwapError>>;
@@ -135,51 +134,57 @@ mod native_impl {
     use crate::mm2::lp_swap::maker_swap::{stats_maker_swap_dir, stats_maker_swap_file_path};
     use crate::mm2::lp_swap::taker_swap::{stats_taker_swap_dir, stats_taker_swap_file_path};
     use crate::mm2::lp_swap::{my_swap_file_path, my_swaps_dir};
-    use async_std::fs as async_fs;
-    use common::fs::read_dir_async;
-    use common::log::error;
-    use futures::AsyncWriteExt;
-    use serde::de::DeserializeOwned;
-    use serde::Serialize;
-    use std::ffi::OsStr;
-    use std::io;
-    use std::path::Path;
+    use common::fs::{read_dir_json, read_json, write_json, FsJsonError};
+
+    impl From<FsJsonError> for SavedSwapError {
+        fn from(fs: FsJsonError) -> Self {
+            match fs {
+                FsJsonError::IoReading(reading) => SavedSwapError::ErrorLoading(reading.to_string()),
+                FsJsonError::IoWriting(writing) => SavedSwapError::ErrorUploading(writing.to_string()),
+                FsJsonError::Serializing(serializing) => SavedSwapError::ErrorSerializing(serializing.to_string()),
+                FsJsonError::Deserializing(deserializing) => {
+                    SavedSwapError::ErrorDeserializing(deserializing.to_string())
+                },
+            }
+        }
+    }
 
     #[async_trait]
     impl SavedSwapIo for SavedSwap {
         async fn load_my_swap_from_db(ctx: &MmArc, uuid: Uuid) -> SavedSwapResult<Option<SavedSwap>> {
             let path = my_swap_file_path(ctx, &uuid);
-            load_and_deserialize(&path).await
+            Ok(read_json(&path).await?)
         }
 
         async fn load_all_my_swaps_from_db(ctx: &MmArc) -> SavedSwapResult<Vec<SavedSwap>> {
             let path = my_swaps_dir(&ctx);
-            load_all_and_deserialize(&path).await
+            Ok(read_dir_json(&path).await?)
         }
 
         async fn load_from_maker_stats_db(ctx: &MmArc, uuid: Uuid) -> SavedSwapResult<Option<MakerSavedSwap>> {
             let path = stats_maker_swap_file_path(ctx, &uuid);
-            load_and_deserialize(&path).await
+            Ok(read_json(&path).await?)
         }
 
         async fn load_all_from_maker_stats_db(ctx: &MmArc) -> SavedSwapResult<Vec<MakerSavedSwap>> {
             let path = stats_maker_swap_dir(ctx);
-            load_all_and_deserialize(&path).await
+            Ok(read_dir_json(&path).await?)
         }
 
         async fn load_from_taker_stats_db(ctx: &MmArc, uuid: Uuid) -> SavedSwapResult<Option<TakerSavedSwap>> {
             let path = stats_taker_swap_file_path(ctx, &uuid);
-            load_and_deserialize(&path).await
+            Ok(read_json(&path).await?)
         }
 
         async fn load_all_from_taker_stats_db(ctx: &MmArc) -> SavedSwapResult<Vec<TakerSavedSwap>> {
             let path = stats_taker_swap_dir(ctx);
-            load_all_and_deserialize(&path).await
+            Ok(read_dir_json(&path).await?)
         }
 
         async fn save_to_db(&self, ctx: &MmArc) -> SavedSwapResult<()> {
             let path = my_swap_file_path(ctx, self.uuid());
-            serialize_and_save(self, &path).await
+            write_json(self, &path).await?;
+            Ok(())
         }
 
         /// Save the inner maker/taker swap to the corresponding stats db.
@@ -187,79 +192,15 @@ mod native_impl {
             match self {
                 SavedSwap::Maker(maker) => {
                     let path = stats_maker_swap_file_path(ctx, &maker.uuid);
-                    serialize_and_save(maker, &path).await
+                    write_json(self, &path).await?;
                 },
                 SavedSwap::Taker(taker) => {
                     let path = stats_taker_swap_file_path(ctx, &taker.uuid);
-                    serialize_and_save(taker, &path).await
+                    write_json(self, &path).await?;
                 },
             }
-        }
-    }
-
-    async fn load_and_deserialize<Swap>(path: &Path) -> SavedSwapResult<Option<Swap>>
-    where
-        Swap: DeserializeOwned,
-    {
-        let content = match async_fs::read(path).await {
-            Ok(content) => content,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
-            Err(e) => return MmError::err(SavedSwapError::ErrorLoading(e.to_string())),
-        };
-        json::from_slice(&content).map_to_mm(|e| SavedSwapError::ErrorDeserializing(e.to_string()))
-    }
-
-    async fn load_all_and_deserialize<Swap>(dir_path: &Path) -> SavedSwapResult<Vec<Swap>>
-    where
-        Swap: DeserializeOwned,
-    {
-        let json_ext = Some(OsStr::new("json"));
-        let entries: Vec<_> = read_dir_async(dir_path)
-            .await
-            .map_to_mm(SavedSwapError::ErrorLoading)?
-            .into_iter()
-            .filter(|path| path.extension() == json_ext)
-            .collect();
-
-        let mut result = Vec::new();
-        for swap_path in entries {
-            match load_and_deserialize(&swap_path).await {
-                Ok(Some(swap)) => result.push(swap),
-                Ok(None) => {
-                    error!(
-                        "Expected a saved swap at the file {}, found 'None'",
-                        swap_path.display()
-                    );
-                    continue;
-                },
-                Err(e) => {
-                    error!("Error reading the swap from the file {}: {}", swap_path.display(), e);
-                    continue;
-                },
-            };
-        }
-        Ok(result)
-    }
-
-    async fn serialize_and_save<Swap>(swap: &Swap, path: &Path) -> SavedSwapResult<()>
-    where
-        Swap: Serialize,
-    {
-        let content = json::to_vec(swap).map_to_mm(|e| SavedSwapError::ErrorSerializing(e.to_string()))?;
-
-        let fs_fut = async {
-            let mut file = async_fs::File::create(&path).await?;
-            file.write_all(&content).await?;
-            file.flush().await?;
             Ok(())
-        };
-
-        let res: io::Result<_> = fs_fut.await;
-        if let Err(e) = res {
-            let error = format!("Error '{}' creating/writing the file {}", e, path.display());
-            return MmError::err(SavedSwapError::ErrorUploading(error));
         }
-        Ok(())
     }
 }
 
@@ -268,6 +209,7 @@ mod wasm_impl {
     use super::*;
     use crate::mm2::lp_swap::swap_db::{DbTransactionError, InitDbError, SavedSwapTable};
     use crate::mm2::lp_swap::SwapsContext;
+    use serde_json as json;
 
     impl From<DbTransactionError> for SavedSwapError {
         fn from(e: DbTransactionError) -> Self {
@@ -354,6 +296,7 @@ mod tests {
     use crate::mm2::lp_swap::swap_db::{ItemId, SavedSwapTable};
     use crate::mm2::lp_swap::SwapsContext;
     use common::mm_ctx::MmCtxBuilder;
+    use serde_json as json;
     use wasm_bindgen_test::*;
 
     wasm_bindgen_test_configure!(run_in_browser);

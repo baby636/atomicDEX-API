@@ -227,6 +227,36 @@ macro_rules! log_tag {
     }};
 }
 
+#[macro_export]
+macro_rules! error_if {
+    ($expression:expr) => {{
+        if let Err(e) = $expression {
+            $crate::log::error!("'{}' resulted in an error: {}", stringify!($expression), e);
+        }
+    }};
+
+    ($res:expr, $msg:literal) => {{
+        if let Err(e) = $res {
+            $crate::log::error!("{}: {}", $msg, e);
+        }
+    }};
+}
+
+#[macro_export]
+macro_rules! warn_if {
+    ($res:expr) => {{
+        if let Err(e) = $res {
+            $crate::log::warn!("{}", e);
+        }
+    }};
+
+    ($res:expr, $msg:literal) => {{
+        if let Err(e) = $res {
+            $crate::log::warn!("{}: {}", $msg, e);
+        }
+    }};
+}
+
 pub trait TagParam<'a> {
     fn key(&self) -> String;
     fn val(&self) -> Option<String>;

@@ -170,7 +170,7 @@ pub fn broadcast_p2p_msg(ctx: &MmArc, topics: Vec<String>, msg: Vec<u8>) {
 ///
 /// # Safety
 ///
-/// The function locks the [`MmCtx::p2p_ctx`] mutext.
+/// The function locks the [`MmCtx::p2p_ctx`] mutex.
 pub async fn subscribe_to_topic(ctx: &MmArc, topic: String) {
     let p2p_ctx = P2PContext::fetch_from_mm_arc(ctx);
     let cmd = AdexBehaviourCmd::Subscribe { topic };

@@ -6,7 +6,7 @@ use uuid::Uuid;
 
 pub use common::indexed_db::{cursor_prelude, DbTransactionError, DbTransactionResult, InitDbError, InitDbResult,
                              ItemId};
-pub use tables::{MySwapsTable, SavedSwapTable, SwapLockTable};
+pub use tables::{MySwapsFiltersTable, SavedSwapTable, SwapLockTable};
 
 const DB_NAME: &str = "swap";
 const DB_VERSION: u32 = 1;
@@ -24,7 +24,7 @@ impl DbInstance for SwapDb {
             .with_version(DB_VERSION)
             .with_table::<SwapLockTable>()
             .with_table::<SavedSwapTable>()
-            .with_table::<MySwapsTable>()
+            .with_table::<MySwapsFiltersTable>()
             .build()
             .await?;
         Ok(SwapDb { inner })
@@ -69,15 +69,18 @@ pub mod tables {
         }
     }
 
+    /// This table is used to select uuids applying given filters.
+    /// When we iterate over an index like `["my_coin", "other_coin"]`, a cursor returns items with all fields.
+    /// So, if we combine `SavedSwapTable` and `MySwapsFiltersTable` into one, we will get `saved_swap` on every cursor callback that is overhead.
     #[derive(Debug, Serialize, Deserialize, Eq, Ord, PartialEq, PartialOrd)]
-    pub struct MySwapsTable {
+    pub struct MySwapsFiltersTable {
         pub uuid: Uuid,
         pub my_coin: String,
         pub other_coin: String,
         pub started_at: u32,
     }
 
-    impl TableSignature for MySwapsTable {
+    impl TableSignature for MySwapsFiltersTable {
         fn table_name() -> &'static str { "my_swaps" }
 
         fn on_upgrade_needed(upgrader: &DbUpgrader, old_version: u32, new_version: u32) -> OnUpgradeResult<()> {

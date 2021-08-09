@@ -31,8 +31,7 @@ use common::mm_ctx::{from_ctx, MmArc, MmWeak};
 use common::mm_number::{Fraction, MmNumber};
 use common::{bits256, log, new_uuid, now_ms};
 use derive_more::Display;
-use futures::{compat::Future01CompatExt, lock::Mutex as AsyncMutex, StreamExt, TryFutureExt};
-use gstuff::slurp;
+use futures::{compat::Future01CompatExt, lock::Mutex as AsyncMutex, TryFutureExt};
 use hash256_std_hasher::Hash256StdHasher;
 use hash_db::{Hasher, EMPTY_PREFIX};
 use http::Response;
@@ -50,7 +49,6 @@ use std::collections::hash_map::{Entry, HashMap, RawEntryMut};
 use std::collections::{BTreeSet, HashSet};
 use std::convert::TryInto;
 use std::fmt;
-use std::fs::DirEntry;
 use std::path::PathBuf;
 use std::sync::Arc;
 use trie_db::NodeCodec as NodeCodecT;
@@ -65,14 +63,15 @@ use crate::mm2::lp_swap::{calc_max_maker_vol, check_balance_for_maker_swap, chec
 
 pub use best_orders::best_orders_rpc;
 use common::mm_error::MmError;
+use my_orders_storage::{delete_my_maker_order, delete_my_taker_order, save_maker_order_on_update,
+                        save_my_new_maker_order, save_my_new_taker_order, MyActiveOrders, MyOrdersFilteringHistory,
+                        MyOrdersHistory, MyOrdersStorage};
 pub use orderbook_depth::orderbook_depth_rpc;
 pub use orderbook_rpc::orderbook_rpc;
 
-cfg_native! {
-    use common::fs::{write, json_dir_entries, remove_file};
-}
-
 #[path = "lp_ordermatch/best_orders.rs"] mod best_orders;
+#[path = "lp_ordermatch/my_orders_storage.rs"]
+mod my_orders_storage;
 #[path = "lp_ordermatch/new_protocol.rs"] mod new_protocol;
 #[path = "lp_ordermatch/order_requests_tracker.rs"]
 mod order_requests_tracker;
@@ -869,33 +868,42 @@ impl BalanceTradeFeeUpdatedHandler for BalanceUpdateOrdermatchHandler {
                 return;
             },
         };
+
         let ordermatch_ctx = OrdermatchContext::from_ctx(&ctx).unwrap();
         let mut maker_orders = ordermatch_ctx.my_maker_orders.lock().await;
-        *maker_orders = maker_orders
-            .drain()
-            .filter_map(|(uuid, order)| {
-                if order.base == coin.ticker() {
-                    if new_volume < order.min_base_vol {
-                        let ctx = ctx.clone();
-                        delete_my_maker_order(&ctx, &order, MakerOrderCancellationReason::InsufficientBalance);
-                        spawn(async move { maker_order_cancelled_p2p_notify(ctx, &order).await });
-                        None
-                    } else if new_volume < order.available_amount() {
-                        let mut update_msg = new_protocol::MakerOrderUpdated::new(order.uuid);
-                        update_msg.with_new_max_volume(new_volume.to_ratio());
-                        let base = order.base.to_owned();
-                        let rel = order.rel.to_owned();
-                        let ctx = ctx.clone();
-                        spawn(async move { maker_order_updated_p2p_notify(ctx, &base, &rel, update_msg).await });
-                        Some((uuid, order))
-                    } else {
-                        Some((uuid, order))
-                    }
-                } else {
-                    Some((uuid, order))
-                }
-            })
-            .collect();
+        let mut my_actual_maker_orders = HashMap::with_capacity(maker_orders.len());
+
+        for (uuid, order) in maker_orders.drain() {
+            if order.base != coin.ticker() {
+                // return the order to [`OrdermatchContext::my_maker_orders`]
+                my_actual_maker_orders.insert(uuid, order);
+                continue;
+            }
+
+            if new_volume < order.min_base_vol {
+                // cancel the order
+                maker_order_cancelled_p2p_notify(ctx.clone(), &order).await;
+                delete_my_maker_order(ctx.clone(), order, MakerOrderCancellationReason::InsufficientBalance)
+                    .compat()
+                    .await
+                    .ok();
+                continue;
+            }
+
+            if new_volume < order.available_amount() {
+                let mut update_msg = new_protocol::MakerOrderUpdated::new(order.uuid);
+                update_msg.with_new_max_volume(new_volume.to_ratio());
+                let base = order.base.to_owned();
+                let rel = order.rel.to_owned();
+
+                maker_order_updated_p2p_notify(ctx.clone(), &base, &rel, update_msg).await;
+            }
+
+            // return the order to [`OrdermatchContext::my_maker_orders`]
+            my_actual_maker_orders.insert(uuid, order);
+        }
+
+        *maker_orders = my_actual_maker_orders;
     }
 }
 
@@ -2353,7 +2361,6 @@ impl Orderbook {
 struct OrdermatchContext {
     pub my_maker_orders: AsyncMutex<HashMap<Uuid, MakerOrder>>,
     pub my_taker_orders: AsyncMutex<HashMap<Uuid, TakerOrder>>,
-    pub my_cancelled_orders: AsyncMutex<HashMap<Uuid, MakerOrder>>,
     pub orderbook: AsyncMutex<Orderbook>,
     pub order_requests_tracker: AsyncMutex<OrderRequestsTracker>,
     pub inactive_orders: AsyncMutex<HashMap<Uuid, OrderbookItem>>,
@@ -2548,80 +2555,10 @@ pub async fn lp_ordermatch_loop(ctx: MmArc) {
             break;
         }
         let ordermatch_ctx = OrdermatchContext::from_ctx(&ctx).unwrap();
-        {
-            let mut my_taker_orders = ordermatch_ctx.my_taker_orders.lock().await;
-            let mut my_maker_orders = ordermatch_ctx.my_maker_orders.lock().await;
-            let _my_cancelled_orders = ordermatch_ctx.my_cancelled_orders.lock().await;
-            // transform the timed out and unmatched GTC taker orders to maker
-            *my_taker_orders = my_taker_orders
-                .drain()
-                .filter_map(|(uuid, order)| {
-                    if order.created_at + order.timeout * 1000 < now_ms() {
-                        if order.matches.is_empty() && order.order_type == OrderType::GoodTillCancelled {
-                            delete_my_taker_order(&ctx, &order, TakerOrderCancellationReason::ToMaker);
-                            let maker_order: MakerOrder = order.into();
-                            my_maker_orders.insert(uuid, maker_order.clone());
-                            save_my_maker_order(&ctx, &maker_order);
-                            if maker_order.save_in_history {
-                                if let Err(e) = update_was_taker_in_db(&ctx, uuid) {
-                                    error!("Error {} on order update", e);
-                                }
-                            }
-                            spawn({
-                                let ctx = ctx.clone();
-                                async move {
-                                    if let Ok(Some((base, rel))) =
-                                        find_pair(&ctx, &maker_order.base, &maker_order.rel).await
-                                    {
-                                        maker_order_created_p2p_notify(
-                                            ctx,
-                                            &maker_order,
-                                            base.coin_protocol_info(),
-                                            rel.coin_protocol_info(),
-                                        )
-                                        .await;
-                                    }
-                                }
-                            });
-                        } else {
-                            delete_my_taker_order(&ctx, &order, TakerOrderCancellationReason::TimedOut);
-                        }
-                        None
-                    } else {
-                        Some((uuid, order))
-                    }
-                })
-                .collect();
-            // remove timed out unfinished matches to unlock the reserved amount
-            my_maker_orders.iter_mut().for_each(|(_, order)| {
-                let old_len = order.matches.len();
-                order.matches.retain(|_, order_match| {
-                    order_match.last_updated + ORDER_MATCH_TIMEOUT * 1000 > now_ms() || order_match.connected.is_some()
-                });
-                if old_len != order.matches.len() {
-                    save_my_maker_order(&ctx, order);
-                }
-            });
-            *my_maker_orders = futures::stream::iter(my_maker_orders.drain())
-                .filter_map(|(uuid, order)| {
-                    let ctx = ctx.clone();
-                    async move {
-                        if order.available_amount() < order.min_base_vol && !order.has_ongoing_matches() {
-                            if order.matches.is_empty() {
-                                delete_my_maker_order(&ctx, &order, MakerOrderCancellationReason::InsufficientBalance);
-                            } else {
-                                delete_my_maker_order(&ctx, &order, MakerOrderCancellationReason::Fulfilled);
-                            }
-                            maker_order_cancelled_p2p_notify(ctx.clone(), &order).await;
-                            None
-                        } else {
-                            Some((uuid, order))
-                        }
-                    }
-                })
-                .collect()
-                .await;
-        }
+
+        handle_timed_out_taker_orders(ctx.clone(), &ordermatch_ctx).await;
+        handle_timed_out_maker_matches(ctx.clone(), &ordermatch_ctx).await;
+        check_balance_for_maker_orders(ctx.clone(), &ordermatch_ctx).await;
 
         {
             // remove "timed out" pubkeys states with their orders from orderbook
@@ -2686,12 +2623,116 @@ pub async fn lp_ordermatch_loop(ctx: MmArc) {
 
             for uuid in to_cancel {
                 if let Some(order) = my_maker_orders.remove(&uuid) {
-                    delete_my_maker_order(&ctx, &order, MakerOrderCancellationReason::InsufficientBalance);
+                    delete_my_maker_order(ctx.clone(), order, MakerOrderCancellationReason::InsufficientBalance)
+                        .compat()
+                        .await
+                        .ok();
                 }
             }
         }
 
         Timer::sleep(0.777).await;
+    }
+}
+
+/// Transforms the timed out and unmatched GTC taker orders to maker.
+///
+/// # Safety
+///
+/// The function locks the [`OrdermatchContext::my_maker_orders`] and [`OrdermatchContext::my_taker_orders`] mutexes.
+async fn handle_timed_out_taker_orders(ctx: MmArc, ordermatch_ctx: &OrdermatchContext) {
+    let mut my_taker_orders = ordermatch_ctx.my_taker_orders.lock().await;
+    let mut my_maker_orders = ordermatch_ctx.my_maker_orders.lock().await;
+
+    let storage = MyOrdersStorage::new(ctx.clone());
+    let mut my_actual_taker_orders = HashMap::with_capacity(my_taker_orders.len());
+
+    for (uuid, order) in my_taker_orders.drain() {
+        if order.created_at + order.timeout * 1000 >= now_ms() {
+            my_actual_taker_orders.insert(uuid, order);
+            continue;
+        }
+
+        if !order.matches.is_empty() || order.order_type != OrderType::GoodTillCancelled {
+            delete_my_taker_order(ctx.clone(), order, TakerOrderCancellationReason::TimedOut)
+                .compat()
+                .await
+                .ok();
+            continue;
+        }
+
+        // transform the timed out taker order to maker
+
+        delete_my_taker_order(ctx.clone(), order.clone(), TakerOrderCancellationReason::ToMaker)
+            .compat()
+            .await
+            .ok();
+        let maker_order: MakerOrder = order.into();
+        my_maker_orders.insert(uuid, maker_order.clone());
+
+        error_if!(storage.save_new_active_maker_order(&maker_order).await);
+        if maker_order.save_in_history {
+            error_if!(storage.update_was_taker_in_filtering_history(uuid).await);
+        }
+
+        // notify other peers
+        if let Ok(Some((base, rel))) = find_pair(&ctx, &maker_order.base, &maker_order.rel).await {
+            maker_order_created_p2p_notify(
+                ctx.clone(),
+                &maker_order,
+                base.coin_protocol_info(),
+                rel.coin_protocol_info(),
+            )
+            .await;
+        }
+    }
+
+    *my_taker_orders = my_actual_taker_orders;
+}
+
+/// # Safety
+///
+/// The function locks the [`OrdermatchContext::my_maker_orders`] mutex.
+async fn check_balance_for_maker_orders(ctx: MmArc, ordermatch_ctx: &OrdermatchContext) {
+    let mut my_maker_orders = ordermatch_ctx.my_maker_orders.lock().await;
+    let mut my_actual_maker_orders = HashMap::with_capacity(my_maker_orders.len());
+
+    for (uuid, order) in my_maker_orders.drain() {
+        if order.available_amount() >= order.min_base_vol || order.has_ongoing_matches() {
+            my_actual_maker_orders.insert(uuid, order);
+            continue;
+        }
+
+        let reason = if order.matches.is_empty() {
+            MakerOrderCancellationReason::InsufficientBalance
+        } else {
+            MakerOrderCancellationReason::Fulfilled
+        };
+        maker_order_cancelled_p2p_notify(ctx.clone(), &order).await;
+        delete_my_maker_order(ctx.clone(), order, reason).compat().await.ok();
+    }
+
+    *my_maker_orders = my_actual_maker_orders;
+}
+
+/// Removes timed out unfinished matches to unlock the reserved amount.
+///
+/// # Safety
+///
+/// The function locks the [`OrdermatchContext::my_maker_orders`] mutex.
+async fn handle_timed_out_maker_matches(ctx: MmArc, ordermatch_ctx: &OrdermatchContext) {
+    let now = now_ms();
+    let storage = MyOrdersStorage::new(ctx.clone());
+    let mut my_maker_orders = ordermatch_ctx.my_maker_orders.lock().await;
+
+    for (_, order) in my_maker_orders.iter_mut() {
+        let old_len = order.matches.len();
+        order.matches.retain(|_, order_match| {
+            order_match.last_updated + ORDER_MATCH_TIMEOUT * 1000 > now || order_match.connected.is_some()
+        });
+        if old_len != order.matches.len() {
+            error_if!(storage.update_active_maker_order(order).await);
+        }
     }
 }
 
@@ -2736,7 +2777,8 @@ async fn process_maker_reserved(ctx: MmArc, from_pubkey: H256Json, reserved_msg:
         my_order
             .matches
             .insert(taker_match.reserved.maker_order_uuid, taker_match);
-        save_my_taker_order(&ctx, &my_order);
+
+        error_if!(MyOrdersStorage::new(ctx).update_active_taker_order(my_order).await);
     }
 }
 
@@ -2771,8 +2813,11 @@ async fn process_maker_connected(ctx: MmArc, from_pubkey: H256Json, connected: M
     // alice
     lp_connected_alice(ctx.clone(), my_order_entry.get().request.clone(), order_match.clone());
     // remove the matched order immediately
-    delete_my_taker_order(&ctx, &my_order_entry.get(), TakerOrderCancellationReason::Fulfilled);
-    my_order_entry.remove();
+    let order = my_order_entry.remove();
+    delete_my_taker_order(ctx, order, TakerOrderCancellationReason::Fulfilled)
+        .compat()
+        .await
+        .ok();
 }
 
 async fn process_taker_request(ctx: MmArc, from_pubkey: H256Json, taker_request: TakerRequest) {
@@ -2788,6 +2833,7 @@ async fn process_taker_request(ctx: MmArc, from_pubkey: H256Json, taker_request:
     }
 
     let ordermatch_ctx = OrdermatchContext::from_ctx(&ctx).unwrap();
+    let storage = MyOrdersStorage::new(ctx.clone());
     let mut my_orders = ordermatch_ctx.my_maker_orders.lock().await;
     let filtered = my_orders
         .iter_mut()
@@ -2835,7 +2881,7 @@ async fn process_taker_request(ctx: MmArc, from_pubkey: H256Json, taker_request:
                     last_updated: now_ms(),
                 };
                 order.matches.insert(maker_match.request.uuid, maker_match);
-                save_my_maker_order(&ctx, &order);
+                error_if!(storage.update_active_maker_order(order).await);
             }
             return;
         }
@@ -2891,7 +2937,7 @@ async fn process_taker_connect(ctx: MmArc, sender_pubkey: H256Json, connect_msg:
             updated_msg.with_new_max_volume(my_order.available_amount().into());
             maker_order_updated_p2p_notify(ctx.clone(), &my_order.base, &my_order.rel, updated_msg).await;
         }
-        save_my_maker_order(&ctx, &my_order);
+        error_if!(MyOrdersStorage::new(ctx).update_active_maker_order(my_order).await);
     }
 }
 
@@ -3095,7 +3141,7 @@ pub async fn lp_auto_buy(
     }
     let order = try_s!(order_builder.build());
     broadcast_ordermatch_message(
-        &ctx,
+        ctx,
         vec![orderbook_topic_from_base_rel(&input.base, &input.rel)],
         order.request.clone().into(),
     );
@@ -3105,7 +3151,8 @@ pub async fn lp_auto_buy(
         order_type: order.order_type,
         min_volume: order.min_volume.clone().into(),
     } });
-    save_my_new_taker_order(ctx, &order);
+
+    save_my_new_taker_order(ctx.clone(), &order).await;
     my_taker_orders.insert(order.request.uuid, order);
     Ok(result.to_string())
 }
@@ -3494,29 +3541,7 @@ impl<'a> From<&'a MakerOrder> for MakerOrderForRpc<'a> {
 async fn cancel_orders_on_error<T, E>(ctx: &MmArc, req: &SetPriceReq, error: E) -> Result<T, E> {
     if req.cancel_previous {
         let ordermatch_ctx = OrdermatchContext::from_ctx(&ctx).unwrap();
-        let mut my_orders = ordermatch_ctx.my_maker_orders.lock().await;
-
-        let mut cancelled = vec![];
-        // remove the previous orders if there're some to allow multiple setprice call per pair
-        // it's common use case now as `autoprice` doesn't work with new ordermatching and
-        // MM2 users request the coins price from aggregators by their own scripts issuing
-        // repetitive setprice calls with new price
-        *my_orders = my_orders
-            .drain()
-            .filter_map(|(uuid, order)| {
-                let to_delete = order.base == req.base && order.rel == req.rel;
-                if to_delete {
-                    delete_my_maker_order(&ctx, &order, MakerOrderCancellationReason::Cancelled);
-                    cancelled.push(order);
-                    None
-                } else {
-                    Some((uuid, order))
-                }
-            })
-            .collect();
-        for order in cancelled {
-            maker_order_cancelled_p2p_notify(ctx.clone(), &order).await;
-        }
+        cancel_previous_maker_orders(ctx, &ordermatch_ctx, &req.base, &req.rel).await;
     }
     Err(error)
 }
@@ -3582,30 +3607,9 @@ pub async fn set_price(ctx: MmArc, req: Json) -> Result<Response<Vec<u8>>, Strin
     };
 
     let ordermatch_ctx = try_s!(OrdermatchContext::from_ctx(&ctx));
-    let mut my_orders = ordermatch_ctx.my_maker_orders.lock().await;
 
     if req.cancel_previous {
-        let mut cancelled = vec![];
-        // remove the previous orders if there're some to allow multiple setprice call per pair
-        // it's common use case now as `autoprice` doesn't work with new ordermatching and
-        // MM2 users request the coins price from aggregators by their own scripts issuing
-        // repetitive setprice calls with new price
-        *my_orders = my_orders
-            .drain()
-            .filter_map(|(uuid, order)| {
-                let to_delete = order.base == req.base && order.rel == req.rel;
-                if to_delete {
-                    delete_my_maker_order(&ctx, &order, MakerOrderCancellationReason::Cancelled);
-                    cancelled.push(order);
-                    None
-                } else {
-                    Some((uuid, order))
-                }
-            })
-            .collect();
-        for order in cancelled {
-            maker_order_cancelled_p2p_notify(ctx.clone(), &order).await;
-        }
+        cancel_previous_maker_orders(&ctx, &ordermatch_ctx, &req.base, &req.rel).await;
     }
 
     let conf_settings = OrderConfirmationsSettings {
@@ -3625,7 +3629,7 @@ pub async fn set_price(ctx: MmArc, req: Json) -> Result<Response<Vec<u8>>, Strin
 
     let request_orderbook = false;
     try_s!(subscribe_to_orderbook_topic(&ctx, &new_order.base, &new_order.rel, request_orderbook).await);
-    save_my_new_maker_order(&ctx, &new_order);
+    save_my_new_maker_order(ctx.clone(), &new_order).await;
     maker_order_created_p2p_notify(
         ctx.clone(),
         &new_order,
@@ -3635,8 +3639,46 @@ pub async fn set_price(ctx: MmArc, req: Json) -> Result<Response<Vec<u8>>, Strin
     .await;
     let rpc_result = MakerOrderForRpc::from(&new_order);
     let res = try_s!(json::to_vec(&json!({ "result": rpc_result })));
+
+    let mut my_orders = ordermatch_ctx.my_maker_orders.lock().await;
     my_orders.insert(new_order.uuid, new_order);
+
     Ok(try_s!(Response::builder().body(res)))
+}
+
+/// Removes the previous orders if there're some to allow multiple setprice call per pair.
+/// It's common use case now as `autoprice` doesn't work with new ordermatching and
+/// MM2 users request the coins price from aggregators by their own scripts issuing
+/// repetitive setprice calls with new price
+///
+/// # Safety
+///
+/// The function locks the [`OrdermatchContext::my_maker_orders`] mutex.
+async fn cancel_previous_maker_orders(
+    ctx: &MmArc,
+    ordermatch_ctx: &OrdermatchContext,
+    base_to_delete: &str,
+    rel_to_delete: &str,
+) {
+    let mut my_maker_orders = ordermatch_ctx.my_maker_orders.lock().await;
+    let mut my_actual_maker_orders = HashMap::with_capacity(my_maker_orders.len());
+
+    for (uuid, order) in my_maker_orders.drain() {
+        let to_delete = order.base == base_to_delete && order.rel == rel_to_delete;
+        if to_delete {
+            maker_order_cancelled_p2p_notify(ctx.clone(), &order).await;
+            delete_my_maker_order(ctx.clone(), order, MakerOrderCancellationReason::Cancelled)
+                .compat()
+                .await
+                .ok();
+            continue;
+        }
+
+        // return the order to [`OrdermatchContext::my_maker_orders`]
+        my_actual_maker_orders.insert(uuid, order);
+    }
+
+    *my_maker_orders = my_actual_maker_orders;
 }
 
 pub async fn update_maker_order(ctx: MmArc, req: Json) -> Result<Response<Vec<u8>>, String> {
@@ -3771,7 +3813,7 @@ pub async fn update_maker_order(ctx: MmArc, req: Json) -> Result<Response<Vec<u8
             let new_change = HistoricalOrder::build(&update_msg, &order);
             order.apply_updated(&update_msg);
             order.changes_history.get_or_insert(Vec::new()).push(new_change);
-            save_maker_order_on_update(&ctx, &order);
+            save_maker_order_on_update(ctx.clone(), &order).await;
             update_msg.with_new_max_volume((new_volume - reserved_amount).into());
             (MakerOrderForRpc::from(&*order), order.base.as_str(), order.rel.as_str())
         },
@@ -3816,11 +3858,11 @@ pub async fn order_status(_ctx: MmArc, _req: Json) -> Result<Response<Vec<u8>>, 
 
 #[cfg(not(target_arch = "wasm32"))]
 pub async fn order_status(ctx: MmArc, req: Json) -> Result<Response<Vec<u8>>, String> {
-    use crate::mm2::database::my_orders::select_status_by_uuid;
-
     let req: OrderStatusReq = try_s!(json::from_value(req));
 
     let ordermatch_ctx = try_s!(OrdermatchContext::from_ctx(&ctx));
+    let storage = MyOrdersStorage::new(ctx.clone());
+
     let maker_orders = ordermatch_ctx.my_maker_orders.lock().await;
     if let Some(order) = maker_orders.get(&req.uuid) {
         let res = json!({
@@ -3843,37 +3885,27 @@ pub async fn order_status(ctx: MmArc, req: Json) -> Result<Response<Vec<u8>>, St
             .map_err(|e| ERRL!("{}", e));
     }
 
-    let order_path = my_orders_history_dir(&ctx).join(req.uuid.to_string() + ".json");
+    let order = try_s!(storage.load_order_from_history(req.uuid).await);
+    let cancellation_reason = &try_s!(storage.select_order_status(req.uuid).await);
 
-    if let Ok(order) = json::from_slice::<Order>(&slurp(&order_path)) {
-        let cancellation_reason = &try_s!(select_status_by_uuid(&ctx.sqlite_connection(), &req.uuid));
-        let res = json!(OrderForRpcWithCancellationReason {
-            order: OrderForRpc::from(&order),
-            cancellation_reason,
-        });
-        return Response::builder()
-            .body(json::to_vec(&res).expect("Serialization failed"))
-            .map_err(|e| ERRL!("{}", e));
-    }
-
-    let res = json!({
-        "error": format!("Order with uuid {} is not found", req.uuid),
+    let res = json!(OrderForRpcWithCancellationReason {
+        order: OrderForRpc::from(&order),
+        cancellation_reason,
     });
-    Response::builder()
-        .status(404)
+    return Response::builder()
         .body(json::to_vec(&res).expect("Serialization failed"))
-        .map_err(|e| ERRL!("{}", e))
+        .map_err(|e| ERRL!("{}", e));
 }
 
 #[derive(Display)]
-enum MakerOrderCancellationReason {
+pub enum MakerOrderCancellationReason {
     Fulfilled,
     InsufficientBalance,
     Cancelled,
 }
 
 #[derive(Display)]
-enum TakerOrderCancellationReason {
+pub enum TakerOrderCancellationReason {
     Fulfilled,
     ToMaker,
     TimedOut,
@@ -3900,7 +3932,7 @@ pub struct MyOrdersFilter {
 
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(tag = "type", content = "order")]
-enum Order {
+pub enum Order {
     Maker(MakerOrder),
     Taker(TakerOrder),
 }
@@ -3920,29 +3952,42 @@ struct UuidParseError {
     warning: String,
 }
 
-#[cfg(target_arch = "wasm32")]
-pub async fn orders_history_by_filter(_ctx: MmArc, _req: Json) -> Result<Response<Vec<u8>>, String> {
-    let res = json!({
-        "error": format!("'orders_history_by_filter' is only supported in native mode yet"),
-    });
-    Response::builder()
-        .status(404)
-        .body(json::to_vec(&res).expect("Serialization failed"))
-        .map_err(|e| ERRL!("{}", e))
+#[derive(Debug, Default)]
+pub struct RecentOrdersSelectResult {
+    /// Orders matching the query
+    pub orders: Vec<FilteringOrder>,
+    /// Total count of orders matching the query
+    pub total_count: usize,
+    /// The number of skipped orders
+    pub skipped: usize,
+}
+
+#[derive(Debug, Serialize)]
+pub struct FilteringOrder {
+    pub uuid: String,
+    pub order_type: String,
+    pub initial_action: String,
+    pub base: String,
+    pub rel: String,
+    pub price: f64,
+    pub volume: f64,
+    pub created_at: i64,
+    pub last_updated: i64,
+    pub was_taker: i8,
+    pub status: String,
 }
 
 /// Returns *all* uuids of swaps, which match the selected filter.
-#[cfg(not(target_arch = "wasm32"))]
 pub async fn orders_history_by_filter(ctx: MmArc, req: Json) -> Result<Response<Vec<u8>>, String> {
-    use crate::mm2::database::my_orders::select_orders_by_filter;
+    let storage = MyOrdersStorage::new(ctx.clone());
 
     let filter: MyOrdersFilter = try_s!(json::from_value(req));
-    let db_result = try_s!(select_orders_by_filter(&ctx.sqlite_connection(), &filter, None));
-    let mut warnings = vec![];
+    let db_result = try_s!(storage.select_orders_by_filter(&filter, None).await);
 
+    let mut warnings = vec![];
     let rpc_orders = if filter.include_details {
-        let mut vec = Vec::with_capacity(db_result.result.len());
-        for order in db_result.result.iter() {
+        let mut vec = Vec::with_capacity(db_result.orders.len());
+        for order in db_result.orders.iter() {
             let uuid = match Uuid::parse_str(order.uuid.as_str()) {
                 Ok(uuid) => uuid,
                 Err(e) => {
@@ -3958,15 +4003,14 @@ pub async fn orders_history_by_filter(ctx: MmArc, req: Json) -> Result<Response<
                     continue;
                 },
             };
-            let order_path = my_orders_history_dir(&ctx).join(order.uuid.clone() + ".json");
-            let content = slurp(&order_path);
-            if let Ok(order) = json::from_slice::<Order>(&content) {
+
+            if let Ok(order) = storage.load_order_from_history(uuid).await {
                 vec.push(order);
                 continue;
             }
 
             let ordermatch_ctx = try_s!(OrdermatchContext::from_ctx(&ctx));
-            if order.order_type == *"Maker" {
+            if order.order_type == "Maker" {
                 let maker_orders = ordermatch_ctx.my_maker_orders.lock().await;
                 if let Some(maker_order) = maker_orders.get(&uuid) {
                     vec.push(Order::Maker(maker_order.to_owned()));
@@ -3988,7 +4032,7 @@ pub async fn orders_history_by_filter(ctx: MmArc, req: Json) -> Result<Response<
 
     let json = json!({
     "result": {
-        "orders": db_result.result,
+        "orders": db_result.orders,
         "details": details,
         "found_records": db_result.total_count,
         "warnings": warnings,
@@ -4015,8 +4059,11 @@ pub async fn cancel_order(ctx: MmArc, req: Json) -> Result<Response<Vec<u8>>, St
                 return ERR!("Order {} is being matched now, can't cancel", req.uuid);
             }
             let order = order.remove();
-            delete_my_maker_order(&ctx, &order, MakerOrderCancellationReason::Cancelled);
-            maker_order_cancelled_p2p_notify(ctx, &order).await;
+            maker_order_cancelled_p2p_notify(ctx.clone(), &order).await;
+            delete_my_maker_order(ctx, order, MakerOrderCancellationReason::Cancelled)
+                .compat()
+                .await
+                .ok();
             let res = json!({
                 "result": "success"
             });
@@ -4035,7 +4082,10 @@ pub async fn cancel_order(ctx: MmArc, req: Json) -> Result<Response<Vec<u8>>, St
                 return ERR!("Order {} is being matched now, can't cancel", req.uuid);
             }
             let order = order.remove();
-            delete_my_taker_order(&ctx, &order, TakerOrderCancellationReason::Cancelled);
+            delete_my_taker_order(ctx, order, TakerOrderCancellationReason::Cancelled)
+                .compat()
+                .await
+                .ok();
             let res = json!({
                 "result": "success"
             });
@@ -4148,46 +4198,6 @@ pub async fn my_orders(ctx: MmArc) -> Result<Response<Vec<u8>>, String> {
         .map_err(|e| ERRL!("{}", e))
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-fn insert_maker_order_to_db(ctx: &MmArc, uuid: Uuid, order: &MakerOrder) -> Result<(), String> {
-    crate::mm2::database::my_orders::insert_maker_order(ctx, uuid, order).map_err(|e| ERRL!("{}", e))
-}
-
-#[cfg(target_arch = "wasm32")]
-fn insert_maker_order_to_db(_ctx: &MmArc, _uuid: Uuid, _order: &MakerOrder) -> Result<(), String> { Ok(()) }
-
-#[cfg(not(target_arch = "wasm32"))]
-fn insert_taker_order_to_db(ctx: &MmArc, uuid: Uuid, order: &TakerOrder) -> Result<(), String> {
-    crate::mm2::database::my_orders::insert_taker_order(ctx, uuid, order).map_err(|e| ERRL!("{}", e))
-}
-
-#[cfg(target_arch = "wasm32")]
-fn insert_taker_order_to_db(_ctx: &MmArc, _uuid: Uuid, _order: &TakerOrder) -> Result<(), String> { Ok(()) }
-
-#[cfg(not(target_arch = "wasm32"))]
-fn update_maker_order_in_db(ctx: &MmArc, uuid: Uuid, order: &MakerOrder) -> Result<(), String> {
-    crate::mm2::database::my_orders::update_maker_order(ctx, uuid, order).map_err(|e| ERRL!("{}", e))
-}
-
-#[cfg(target_arch = "wasm32")]
-fn update_maker_order_in_db(_ctx: &MmArc, _uuid: Uuid, _order: &MakerOrder) -> Result<(), String> { Ok(()) }
-
-#[cfg(not(target_arch = "wasm32"))]
-fn update_was_taker_in_db(ctx: &MmArc, uuid: Uuid) -> Result<(), String> {
-    crate::mm2::database::my_orders::update_was_taker(ctx, uuid).map_err(|e| ERRL!("{}", e))
-}
-
-#[cfg(target_arch = "wasm32")]
-fn update_was_taker_in_db(_ctx: &MmArc, _uuid: Uuid) -> Result<(), String> { Ok(()) }
-
-#[cfg(not(target_arch = "wasm32"))]
-fn update_order_status_in_db(ctx: &MmArc, uuid: Uuid, status: String) -> Result<(), String> {
-    crate::mm2::database::my_orders::update_order_status(ctx, uuid, status).map_err(|e| ERRL!("{}", e))
-}
-
-#[cfg(target_arch = "wasm32")]
-fn update_order_status_in_db(_ctx: &MmArc, _uuid: Uuid, _status: String) -> Result<(), String> { Ok(()) }
-
 pub fn my_maker_orders_dir(ctx: &MmArc) -> PathBuf { ctx.dbdir().join("ORDERS").join("MY").join("MAKER") }
 
 fn my_taker_orders_dir(ctx: &MmArc) -> PathBuf { ctx.dbdir().join("ORDERS").join("MY").join("TAKER") }
@@ -4252,158 +4262,28 @@ impl HistoricalOrder {
     }
 }
 
-/// TODO integrate to WASM
-#[cfg(target_arch = "wasm32")]
-fn save_my_maker_order(_ctx: &MmArc, _order: &MakerOrder) {
-    common::log::warn!("'save_my_maker_order' not supported yet")
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn save_my_maker_order(ctx: &MmArc, order: &MakerOrder) {
-    let path = my_maker_order_file_path(ctx, &order.uuid);
-    let content = json::to_vec(order).unwrap();
-    write(&path, &content).unwrap();
-}
-
-fn save_my_new_maker_order(ctx: &MmArc, order: &MakerOrder) {
-    save_my_maker_order(ctx, order);
-
-    if order.save_in_history {
-        if let Err(e) = insert_maker_order_to_db(&ctx, order.uuid, &order) {
-            error!("Error {} on new order insertion", e);
-        }
-    }
-}
-
-fn save_maker_order_on_update(ctx: &MmArc, order: &MakerOrder) {
-    save_my_maker_order(ctx, order);
-
-    if order.save_in_history {
-        if let Err(e) = update_maker_order_in_db(&ctx, order.uuid, &order) {
-            error!("Error {} on order update", e);
-        }
-    }
-}
-
-/// TODO integrate to WASM
-#[cfg(target_arch = "wasm32")]
-fn save_my_taker_order(_ctx: &MmArc, _order: &TakerOrder) {
-    common::log::warn!("'save_my_taker_order' not supported yet")
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn save_my_taker_order(ctx: &MmArc, order: &TakerOrder) {
-    let path = my_taker_order_file_path(ctx, &order.request.uuid);
-    let content = json::to_vec(order).unwrap();
-    write(&path, &content).unwrap();
-}
-
-fn save_my_new_taker_order(ctx: &MmArc, order: &TakerOrder) {
-    save_my_taker_order(ctx, order);
-
-    if order.save_in_history {
-        if let Err(e) = insert_taker_order_to_db(&ctx, order.request.uuid, &order) {
-            error!("Error {} on new order insertion", e);
-        }
-    }
-}
-
-/// TODO integrate to WASM
-#[cfg(target_arch = "wasm32")]
-fn save_my_order_in_history(_ctx: &MmArc, _order: &Order) {
-    common::log::warn!("'save_my_order_in_history' not supported yet")
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn save_my_order_in_history(ctx: &MmArc, order: &Order) {
-    let path = match order {
-        Order::Maker(o) => my_order_history_file_path(ctx, &o.uuid),
-        Order::Taker(o) => my_order_history_file_path(ctx, &o.request.uuid),
-    };
-    let content = json::to_vec(order).unwrap();
-    write(&path, &content).unwrap();
-}
-
-/// TODO integrate to WASM
-#[cfg(target_arch = "wasm32")]
-fn delete_my_maker_order(_ctx: &MmArc, _order: &MakerOrder, _reason: MakerOrderCancellationReason) {
-    common::log::warn!("'delete_my_maker_order' not supported yet")
-}
-
-#[cfg_attr(test, mockable)]
-#[cfg(not(target_arch = "wasm32"))]
-fn delete_my_maker_order(ctx: &MmArc, order: &MakerOrder, reason: MakerOrderCancellationReason) {
-    let path = my_maker_order_file_path(ctx, &order.uuid);
-    match remove_file(&path) {
-        Ok(_) => (),
-        Err(e) => log::warn!("Could not remove order file {}, error {}", path.display(), e),
-    }
-
-    if order.save_in_history {
-        save_my_order_in_history(ctx, &Order::Maker(order.clone()));
-
-        if let Err(e) = update_order_status_in_db(ctx, order.uuid, reason.to_string()) {
-            error!("Error {} on order update", e);
-        }
-    }
-}
-
-/// TODO integrate to WASM
-#[cfg(target_arch = "wasm32")]
-fn delete_my_taker_order(_ctx: &MmArc, _order: &TakerOrder, _reason: TakerOrderCancellationReason) {
-    common::log::warn!("'delete_my_taker_order' not supported yet")
-}
-
-#[cfg_attr(test, mockable)]
-#[cfg(not(target_arch = "wasm32"))]
-fn delete_my_taker_order(ctx: &MmArc, order: &TakerOrder, reason: TakerOrderCancellationReason) {
-    let path = my_taker_order_file_path(ctx, &order.request.uuid);
-    match remove_file(&path) {
-        Ok(_) => (),
-        Err(e) => log::warn!("Could not remove order file {}, error {}", path.display(), e),
-    }
-
-    match reason {
-        TakerOrderCancellationReason::ToMaker => (),
-        _ => {
-            if order.save_in_history {
-                save_my_order_in_history(ctx, &Order::Taker(order.clone()));
-            }
-        },
-    }
-
-    if order.save_in_history {
-        if let Err(e) = update_order_status_in_db(ctx, order.request.uuid, reason.to_string()) {
-            error!("Error {} on order update", e);
-        }
-    }
-}
-
 #[cfg(not(target_arch = "wasm32"))]
 pub async fn orders_kick_start(ctx: &MmArc) -> Result<HashSet<String>, String> {
     let mut coins = HashSet::new();
     let ordermatch_ctx = try_s!(OrdermatchContext::from_ctx(ctx));
     let mut maker_orders = ordermatch_ctx.my_maker_orders.lock().await;
-    let maker_entries = try_s!(json_dir_entries(&my_maker_orders_dir(&ctx)));
-
-    maker_entries.iter().for_each(|entry| {
-        if let Ok(order) = json::from_slice::<MakerOrder>(&slurp(&entry.path())) {
-            coins.insert(order.base.clone());
-            coins.insert(order.rel.clone());
-            maker_orders.insert(order.uuid, order);
-        }
-    });
-
     let mut taker_orders = ordermatch_ctx.my_taker_orders.lock().await;
-    let taker_entries: Vec<DirEntry> = try_s!(json_dir_entries(&my_taker_orders_dir(&ctx)));
 
-    taker_entries.iter().for_each(|entry| {
-        if let Ok(order) = json::from_slice::<TakerOrder>(&slurp(&entry.path())) {
-            coins.insert(order.request.base.clone());
-            coins.insert(order.request.rel.clone());
-            taker_orders.insert(order.request.uuid, order);
-        }
-    });
+    let storage = MyOrdersStorage::new(ctx.clone());
+    let saved_maker_orders = try_s!(storage.load_active_maker_orders().await);
+    let saved_taker_orders = try_s!(storage.load_active_taker_orders().await);
+
+    for order in saved_maker_orders {
+        coins.insert(order.base.clone());
+        coins.insert(order.rel.clone());
+        maker_orders.insert(order.uuid, order);
+    }
+
+    for order in saved_taker_orders {
+        coins.insert(order.request.base.clone());
+        coins.insert(order.request.rel.clone());
+        taker_orders.insert(order.request.uuid, order);
+    }
     Ok(coins)
 }
 
@@ -4421,6 +4301,7 @@ pub enum CancelBy {
 pub async fn cancel_orders_by(ctx: &MmArc, cancel_by: CancelBy) -> Result<(Vec<Uuid>, Vec<Uuid>), String> {
     let mut cancelled = vec![];
     let mut cancelled_maker_orders = vec![];
+    let mut cancelled_taker_orders = vec![];
     let mut currently_matching = vec![];
 
     let ordermatch_ctx = try_s!(OrdermatchContext::from_ctx(ctx));
@@ -4431,7 +4312,6 @@ pub async fn cancel_orders_by(ctx: &MmArc, cancel_by: CancelBy) -> Result<(Vec<U
         ($e: expr, $uuid: ident, $order: ident) => {
             if $e {
                 if $order.is_cancellable() {
-                    delete_my_maker_order(&ctx, &$order, MakerOrderCancellationReason::Cancelled);
                     cancelled_maker_orders.push($order);
                     cancelled.push($uuid);
                     None
@@ -4449,7 +4329,7 @@ pub async fn cancel_orders_by(ctx: &MmArc, cancel_by: CancelBy) -> Result<(Vec<U
         ($e: expr, $uuid: ident, $order: ident) => {
             if $e {
                 if $order.is_cancellable() {
-                    delete_my_taker_order(&ctx, &$order, TakerOrderCancellationReason::Cancelled);
+                    cancelled_taker_orders.push($order);
                     cancelled.push($uuid);
                     None
                 } else {
@@ -4502,6 +4382,16 @@ pub async fn cancel_orders_by(ctx: &MmArc, cancel_by: CancelBy) -> Result<(Vec<U
     };
     for order in cancelled_maker_orders {
         maker_order_cancelled_p2p_notify(ctx.clone(), &order).await;
+        delete_my_maker_order(ctx.clone(), order, MakerOrderCancellationReason::Cancelled)
+            .compat()
+            .await
+            .ok();
+    }
+    for order in cancelled_taker_orders {
+        delete_my_taker_order(ctx.clone(), order, TakerOrderCancellationReason::Cancelled)
+            .compat()
+            .await
+            .ok();
     }
     Ok((cancelled, currently_matching))
 }
