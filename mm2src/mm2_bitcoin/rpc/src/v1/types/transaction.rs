@@ -163,6 +163,15 @@ impl SignedTransactionOutput {
     pub fn is_empty(&self) -> bool { self.value == Some(0.0) && self.script.is_empty() }
 }
 
+fn deserialize_null_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    T: Default + Deserialize<'de>,
+    D: Deserializer<'de>,
+{
+    let opt = Option::deserialize(deserializer)?;
+    Ok(opt.unwrap_or_default())
+}
+
 /// Transaction
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Transaction {
@@ -186,18 +195,22 @@ pub struct Transaction {
     pub vout: Vec<SignedTransactionOutput>,
     /// Hash of the block this transaction is included in
     #[serde(default)]
+    #[serde(deserialize_with = "deserialize_null_default")]
     pub blockhash: H256,
     /// Number of confirmations of this transaction
     #[serde(default)]
+    #[serde(deserialize_with = "deserialize_null_default")]
     pub confirmations: u32,
     /// Number of rawconfirmations of this transaction, KMD specific
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rawconfirmations: Option<u32>,
     /// The transaction time in seconds since epoch (Jan 1 1970 GMT)
     #[serde(default)]
+    #[serde(deserialize_with = "deserialize_null_default")]
     pub time: u32,
     /// The block time in seconds since epoch (Jan 1 1970 GMT)
     #[serde(default)]
+    #[serde(deserialize_with = "deserialize_null_default")]
     pub blocktime: u32,
     /// The block height transaction mined in
     #[serde(default)]

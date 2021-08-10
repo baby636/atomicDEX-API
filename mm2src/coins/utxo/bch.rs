@@ -62,13 +62,9 @@ impl From<serialization::Error> for IsSlpUtxoError {
 impl BchCoin {
     pub fn slp_prefix(&self) -> CashAddrPrefix { self.slp_addr_prefix }
 
-    pub async fn bch_unspents(
-        &self,
-        address: &Address,
-    ) -> UtxoRpcResult<(BchUnspents, AsyncMutexGuard<'_, RecentlySpentOutPoints>)> {
-        let (all_unspents, recently_spent) = utxo_common::list_unspent_ordered(self, address).await?;
+    async fn utxos_into_bch_unspents(&self, utxos: Vec<UnspentInfo>) -> UtxoRpcResult<BchUnspents> {
         let mut result = BchUnspents::default();
-        for unspent in all_unspents {
+        for unspent in utxos {
             if unspent.outpoint.index == 0 {
                 // zero output is reserved for OP_RETURN of specific protocols
                 // so if we get it we can safely consider this as standard BCH UTXO
@@ -155,10 +151,34 @@ impl BchCoin {
                 };
             }
         }
+        Ok(result)
+    }
+
+    /// Returns unspents to calculate balance, use for displaying purposes only!
+    /// DO NOT USE to build transactions, it can lead to double spending attempt and also have other unpleasant consequences
+    pub async fn bch_unspents_for_display(&self, address: &Address) -> UtxoRpcResult<BchUnspents> {
+        // ordering is not required to display balance to we can simply call "normal" list_unspent
+        let all_unspents = self
+            .utxo_arc
+            .rpc_client
+            .list_unspent(address, self.utxo_arc.decimals)
+            .compat()
+            .await?;
+        self.utxos_into_bch_unspents(all_unspents).await
+    }
+
+    /// Locks recently spent cache to safely return UTXOs for spending
+    pub async fn bch_unspents_for_spend(
+        &self,
+        address: &Address,
+    ) -> UtxoRpcResult<(BchUnspents, AsyncMutexGuard<'_, RecentlySpentOutPoints>)> {
+        let (all_unspents, recently_spent) = utxo_common::list_unspent_ordered(self, address).await?;
+        let result = self.utxos_into_bch_unspents(all_unspents).await?;
+
         Ok((result, recently_spent))
     }
 
-    pub async fn get_token_utxos(
+    pub async fn get_token_utxos_for_spend(
         &self,
         token_id: &H256,
     ) -> UtxoRpcResult<(
@@ -166,7 +186,7 @@ impl BchCoin {
         Vec<UnspentInfo>,
         AsyncMutexGuard<'_, RecentlySpentOutPoints>,
     )> {
-        let (mut bch_unspents, recently_spent) = self.bch_unspents(&self.as_ref().my_address).await?;
+        let (mut bch_unspents, recently_spent) = self.bch_unspents_for_spend(&self.as_ref().my_address).await?;
         let (mut slp_unspents, standard_utxos) = (
             bch_unspents.slp.remove(token_id).unwrap_or_default(),
             bch_unspents.standard,
@@ -174,6 +194,20 @@ impl BchCoin {
 
         slp_unspents.sort_by(|a, b| a.slp_amount.cmp(&b.slp_amount));
         Ok((slp_unspents, standard_utxos, recently_spent))
+    }
+
+    pub async fn get_token_utxos_for_display(
+        &self,
+        token_id: &H256,
+    ) -> UtxoRpcResult<(Vec<SlpUnspent>, Vec<UnspentInfo>)> {
+        let mut bch_unspents = self.bch_unspents_for_display(&self.as_ref().my_address).await?;
+        let (mut slp_unspents, standard_utxos) = (
+            bch_unspents.slp.remove(token_id).unwrap_or_default(),
+            bch_unspents.standard,
+        );
+
+        slp_unspents.sort_by(|a, b| a.slp_amount.cmp(&b.slp_amount));
+        Ok((slp_unspents, standard_utxos))
     }
 }
 
@@ -291,7 +325,7 @@ impl UtxoCommonOps for BchCoin {
         &'a self,
         address: &Address,
     ) -> UtxoRpcResult<(Vec<UnspentInfo>, AsyncMutexGuard<'a, RecentlySpentOutPoints>)> {
-        let (bch_unspents, recently_spent) = self.bch_unspents(address).await?;
+        let (bch_unspents, recently_spent) = self.bch_unspents_for_spend(address).await?;
         Ok((bch_unspents.standard, recently_spent))
     }
 
@@ -517,7 +551,7 @@ impl MarketCoinOps for BchCoin {
     fn my_balance(&self) -> BalanceFut<CoinBalance> {
         let coin = self.clone();
         let fut = async move {
-            let (bch_unspents, _recently_spent) = coin.bch_unspents(&coin.as_ref().my_address).await?;
+            let bch_unspents = coin.bch_unspents_for_display(&coin.as_ref().my_address).await?;
             let spendable_sat = total_unspent_value(&bch_unspents.standard);
 
             let unspendable_slp = bch_unspents.slp.iter().fold(0, |cur, (_, slp_unspents)| {

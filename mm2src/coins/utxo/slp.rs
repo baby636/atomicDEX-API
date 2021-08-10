@@ -250,14 +250,20 @@ impl SlpToken {
     fn rpc(&self) -> &UtxoRpcClientEnum { &self.platform_coin.as_ref().rpc_client }
 
     /// Returns unspents of the SLP token plus plain BCH UTXOs plus RecentlySpentOutPoints mutex guard
-    async fn slp_unspents(
+    async fn slp_unspents_for_spend(
         &self,
     ) -> UtxoRpcResult<(
         Vec<SlpUnspent>,
         Vec<UnspentInfo>,
         AsyncMutexGuard<'_, RecentlySpentOutPoints>,
     )> {
-        self.platform_coin.get_token_utxos(&self.conf.token_id).await
+        self.platform_coin.get_token_utxos_for_spend(&self.conf.token_id).await
+    }
+
+    async fn slp_unspents_for_display(&self) -> UtxoRpcResult<(Vec<SlpUnspent>, Vec<UnspentInfo>)> {
+        self.platform_coin
+            .get_token_utxos_for_display(&self.conf.token_id)
+            .await
     }
 
     /// Generates the tx preimage that spends the SLP from my address to the desired destinations (script pubkeys)
@@ -270,7 +276,7 @@ impl SlpToken {
             return MmError::err(GenSlpSpendErr::TooManyOutputs);
         }
 
-        let (slp_unspents, bch_unspents, recently_spent) = self.slp_unspents().await?;
+        let (slp_unspents, bch_unspents, recently_spent) = self.slp_unspents_for_spend().await?;
         let total_slp_output = slp_outputs.iter().fold(0, |cur, slp_out| cur + slp_out.amount);
         let mut total_slp_input = 0;
 
@@ -528,7 +534,7 @@ impl SlpToken {
         };
         outputs.push(slp_output);
 
-        let (_, bch_inputs, _recently_spent) = self.slp_unspents().await?;
+        let (_, bch_inputs, _recently_spent) = self.slp_unspents_for_spend().await?;
         let (mut unsigned, _) = UtxoTxBuilder::new(&self.platform_coin)
             .add_required_inputs(std::iter::once(p2sh_utxo.bch_unspent))
             .add_available_inputs(bch_inputs)
@@ -678,7 +684,7 @@ impl SlpToken {
     fn platform_conf(&self) -> &UtxoCoinConf { &self.platform_coin.as_ref().conf }
 
     async fn my_balance_sat(&self) -> UtxoRpcResult<u64> {
-        let (slp_unspents, _, _) = self.slp_unspents().await?;
+        let (slp_unspents, _) = self.slp_unspents_for_display().await?;
         let satoshi = slp_unspents.iter().fold(0, |cur, unspent| cur + unspent.slp_amount);
         Ok(satoshi)
     }
