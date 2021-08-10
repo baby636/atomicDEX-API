@@ -74,11 +74,10 @@ pub struct SlpOutput {
 }
 
 /// The SLP transaction preimage
-struct SlpTxPreimage<'a> {
+struct SlpTxPreimage {
     slp_inputs: Vec<UnspentInfo>,
     available_bch_inputs: Vec<UnspentInfo>,
     outputs: Vec<TransactionOutput>,
-    recently_spent: AsyncMutexGuard<'a, RecentlySpentOutPoints>,
 }
 
 #[derive(Debug, Display)]
@@ -270,7 +269,7 @@ impl SlpToken {
     async fn generate_slp_tx_preimage(
         &self,
         slp_outputs: Vec<SlpOutput>,
-    ) -> Result<SlpTxPreimage<'_>, MmError<GenSlpSpendErr>> {
+    ) -> Result<(SlpTxPreimage, AsyncMutexGuard<'_, RecentlySpentOutPoints>), MmError<GenSlpSpendErr>> {
         // the limit is 19, but we may require the change to be added
         if slp_outputs.len() > 18 {
             return MmError::err(GenSlpSpendErr::TooManyOutputs);
@@ -321,22 +320,22 @@ impl SlpToken {
             outputs.push(slp_change_out);
         }
 
-        Ok(SlpTxPreimage {
+        let preimage = SlpTxPreimage {
             slp_inputs: inputs,
             available_bch_inputs: bch_unspents,
             outputs,
-            recently_spent,
-        })
+        };
+        Ok((preimage, recently_spent))
     }
 
     pub async fn send_slp_outputs(&self, slp_outputs: Vec<SlpOutput>) -> Result<UtxoTx, String> {
-        let preimage = try_s!(self.generate_slp_tx_preimage(slp_outputs).await);
+        let (preimage, recently_spent) = try_s!(self.generate_slp_tx_preimage(slp_outputs).await);
         generate_and_send_tx(
             &self.platform_coin,
             preimage.available_bch_inputs,
             Some(preimage.slp_inputs),
             FeePolicy::SendExact,
-            preimage.recently_spent,
+            recently_spent,
             preimage.outputs,
         )
         .await
@@ -352,13 +351,13 @@ impl SlpToken {
         let payment_script = payment_script(time_lock, secret_hash, self.platform_coin.my_public_key(), other_pub);
         let script_pubkey = ScriptBuilder::build_p2sh(&dhash160(&payment_script)).to_bytes();
         let slp_out = SlpOutput { amount, script_pubkey };
-        let preimage = try_s!(self.generate_slp_tx_preimage(vec![slp_out]).await);
+        let (preimage, recently_spent) = try_s!(self.generate_slp_tx_preimage(vec![slp_out]).await);
         generate_and_send_tx(
             &self.platform_coin,
             preimage.available_bch_inputs,
             Some(preimage.slp_inputs),
             FeePolicy::SendExact,
-            preimage.recently_spent,
+            recently_spent,
             preimage.outputs,
         )
         .await
@@ -990,13 +989,13 @@ impl SwapOps for SlpToken {
 
         let fut = async move {
             let slp_out = SlpOutput { amount, script_pubkey };
-            let preimage = try_s!(coin.generate_slp_tx_preimage(vec![slp_out]).await);
+            let (preimage, recently_spent) = try_s!(coin.generate_slp_tx_preimage(vec![slp_out]).await);
             generate_and_send_tx(
                 &coin.platform_coin,
                 preimage.available_bch_inputs,
                 Some(preimage.slp_inputs),
                 FeePolicy::SendExact,
-                preimage.recently_spent,
+                recently_spent,
                 preimage.outputs,
             )
             .await
@@ -1326,7 +1325,7 @@ impl MmCoin for SlpToken {
                 },
             };
             let slp_output = SlpOutput { amount, script_pubkey };
-            let slp_preimage = coin.generate_slp_tx_preimage(vec![slp_output]).await?;
+            let (slp_preimage, _) = coin.generate_slp_tx_preimage(vec![slp_output]).await?;
             let mut tx_builder = UtxoTxBuilder::new(&coin.platform_coin)
                 .add_required_inputs(slp_preimage.slp_inputs)
                 .add_available_inputs(slp_preimage.available_bch_inputs)
@@ -1463,7 +1462,7 @@ impl MmCoin for SlpToken {
                 amount: slp_amount,
                 script_pubkey,
             };
-            let preimage = coin.generate_slp_tx_preimage(vec![slp_out]).await?;
+            let (preimage, _) = coin.generate_slp_tx_preimage(vec![slp_out]).await?;
             let fee = utxo_common::preimage_trade_fee_required_to_send_outputs(
                 &coin.platform_coin,
                 preimage.outputs,
@@ -1513,7 +1512,7 @@ impl MmCoin for SlpToken {
                 amount: slp_amount,
                 script_pubkey,
             };
-            let preimage = coin.generate_slp_tx_preimage(vec![slp_out]).await?;
+            let (preimage, _) = coin.generate_slp_tx_preimage(vec![slp_out]).await?;
             let fee = utxo_common::preimage_trade_fee_required_to_send_outputs(
                 &coin.platform_coin,
                 preimage.outputs,
