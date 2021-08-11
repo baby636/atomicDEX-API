@@ -69,6 +69,13 @@ use my_orders_storage::{delete_my_maker_order, delete_my_taker_order, save_maker
 pub use orderbook_depth::orderbook_depth_rpc;
 pub use orderbook_rpc::orderbook_rpc;
 
+cfg_wasm32! {
+    use common::indexed_db::{ConstructibleDb, DbLocked};
+    use ordermatch_wasm_db::{InitDbResult, OrdermatchDb};
+
+    pub type OrdermatchDbLocked<'a> = DbLocked<'a, OrdermatchDb>;
+}
+
 #[path = "lp_ordermatch/best_orders.rs"] mod best_orders;
 #[path = "lp_ordermatch/my_orders_storage.rs"]
 mod my_orders_storage;
@@ -80,6 +87,10 @@ mod order_requests_tracker;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 #[path = "ordermatch_tests.rs"]
 mod ordermatch_tests;
+
+#[cfg(target_arch = "wasm32")]
+#[path = "lp_ordermatch/ordermatch_wasm_db.rs"]
+mod ordermatch_wasm_db;
 
 pub const ORDERBOOK_PREFIX: TopicPrefix = "orbk";
 const MIN_ORDER_KEEP_ALIVE_INTERVAL: u64 = 30;
@@ -907,7 +918,7 @@ impl BalanceTradeFeeUpdatedHandler for BalanceUpdateOrdermatchHandler {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum TakerAction {
     Buy,
     Sell,
@@ -933,7 +944,7 @@ impl OrderConfirmationsSettings {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct TakerRequest {
     pub base: String,
     pub rel: String,
@@ -1259,7 +1270,7 @@ impl<'a> TakerOrderBuilder<'a> {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "type", content = "data")]
 pub enum MatchBy {
     Any,
@@ -1282,7 +1293,7 @@ impl Default for OrderType {
     fn default() -> Self { OrderType::GoodTillCancelled }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct TakerOrder {
     pub created_at: u64,
     pub request: TakerRequest,
@@ -1353,7 +1364,7 @@ impl TakerOrder {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 /// Market maker order
 /// The "action" is missing here because it's easier to always consider maker order as "sell"
 /// So upon ordermatch with request we have only 2 combinations "sell":"sell" and "sell":"buy"
@@ -1769,7 +1780,7 @@ impl From<TakerOrder> for MakerOrder {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct TakerConnect {
     taker_order_uuid: Uuid,
     maker_order_uuid: Uuid,
@@ -1797,7 +1808,7 @@ impl From<TakerConnect> for new_protocol::OrdermatchMessage {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[cfg_attr(test, derive(Default))]
 pub struct MakerReserved {
     base: String,
@@ -1860,7 +1871,7 @@ impl From<MakerReserved> for new_protocol::OrdermatchMessage {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct MakerConnected {
     taker_order_uuid: Uuid,
     maker_order_uuid: Uuid,
@@ -2357,21 +2368,39 @@ impl Orderbook {
     }
 }
 
-#[derive(Default)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Default))]
 struct OrdermatchContext {
     pub my_maker_orders: AsyncMutex<HashMap<Uuid, MakerOrder>>,
     pub my_taker_orders: AsyncMutex<HashMap<Uuid, TakerOrder>>,
     pub orderbook: AsyncMutex<Orderbook>,
     pub order_requests_tracker: AsyncMutex<OrderRequestsTracker>,
     pub inactive_orders: AsyncMutex<HashMap<Uuid, OrderbookItem>>,
+    #[cfg(target_arch = "wasm32")]
+    ordermatch_db: ConstructibleDb<OrdermatchDb>,
 }
 
-#[cfg_attr(test, mockable)]
+#[cfg_attr(all(test, not(target_arch = "wasm32")), mockable)]
 impl OrdermatchContext {
     /// Obtains a reference to this crate context, creating it if necessary.
+    #[cfg(not(target_arch = "wasm32"))]
     fn from_ctx(ctx: &MmArc) -> Result<Arc<OrdermatchContext>, String> {
         Ok(try_s!(from_ctx(&ctx.ordermatch_ctx, move || {
             Ok(OrdermatchContext::default())
+        })))
+    }
+
+    /// Obtains a reference to this crate context, creating it if necessary.
+    #[cfg(target_arch = "wasm32")]
+    fn from_ctx(ctx: &MmArc) -> Result<Arc<OrdermatchContext>, String> {
+        Ok(try_s!(from_ctx(&ctx.ordermatch_ctx, move || {
+            Ok(OrdermatchContext {
+                my_maker_orders: Default::default(),
+                my_taker_orders: Default::default(),
+                orderbook: Default::default(),
+                order_requests_tracker: Default::default(),
+                inactive_orders: Default::default(),
+                ordermatch_db: ConstructibleDb::from_ctx(ctx),
+            })
         })))
     }
 
@@ -2380,6 +2409,11 @@ impl OrdermatchContext {
     fn from_ctx_weak(ctx_weak: &MmWeak) -> Result<Arc<OrdermatchContext>, String> {
         let ctx = try_s!(MmArc::from_weak(ctx_weak).ok_or("Context expired"));
         Self::from_ctx(&ctx)
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub async fn ordermatch_db(&self) -> InitDbResult<OrdermatchDbLocked<'_>> {
+        Ok(self.ordermatch_db.get_or_initialize().await?)
     }
 }
 
@@ -3033,7 +3067,7 @@ pub async fn sell(ctx: MmArc, req: Json) -> Result<Response<Vec<u8>>, String> {
 }
 
 /// Created when maker order is matched with taker request
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 struct MakerMatch {
     request: TakerRequest,
     reserved: MakerReserved,
@@ -3043,7 +3077,7 @@ struct MakerMatch {
 }
 
 /// Created upon taker request broadcast
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 struct TakerMatch {
     reserved: MakerReserved,
     connect: TakerConnect,
@@ -3930,7 +3964,7 @@ pub struct MyOrdersFilter {
     pub include_details: bool,
 }
 
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "type", content = "order")]
 pub enum Order {
     Maker(MakerOrder),
@@ -3942,6 +3976,15 @@ impl<'a> From<&'a Order> for OrderForRpc<'a> {
         match order {
             Order::Maker(o) => OrderForRpc::Maker(MakerOrderForRpc::from(o)),
             Order::Taker(o) => OrderForRpc::Taker(TakerOrderForRpc::from(o)),
+        }
+    }
+}
+
+impl Order {
+    pub fn uuid(&self) -> Uuid {
+        match self {
+            Order::Maker(maker) => maker.uuid,
+            Order::Taker(taker) => taker.request.uuid,
         }
     }
 }
@@ -4216,7 +4259,7 @@ fn my_order_history_file_path(ctx: &MmArc, uuid: &Uuid) -> PathBuf {
     my_orders_history_dir(ctx).join(format!("{}.json", uuid))
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 struct HistoricalOrder {
     #[serde(skip_serializing_if = "Option::is_none")]
     max_base_vol: Option<MmNumber>,
@@ -4262,7 +4305,6 @@ impl HistoricalOrder {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 pub async fn orders_kick_start(ctx: &MmArc) -> Result<HashSet<String>, String> {
     let mut coins = HashSet::new();
     let ordermatch_ctx = try_s!(OrdermatchContext::from_ctx(ctx));

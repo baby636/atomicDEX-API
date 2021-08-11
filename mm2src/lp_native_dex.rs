@@ -31,7 +31,7 @@ use std::str;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::mm2::database::init_and_migrate_db;
 use crate::mm2::lp_network::{p2p_event_process_loop, P2PContext};
-use crate::mm2::lp_ordermatch::{broadcast_maker_orders_keep_alive_loop, lp_ordermatch_loop,
+use crate::mm2::lp_ordermatch::{broadcast_maker_orders_keep_alive_loop, lp_ordermatch_loop, orders_kick_start,
                                 BalanceUpdateOrdermatchHandler};
 use crate::mm2::lp_swap::{running_swaps_num, swap_kick_starts};
 use crate::mm2::rpc::spawn_rpc;
@@ -391,18 +391,7 @@ pub async fn lp_init(ctx: MmArc) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(target_arch = "wasm32")]
 async fn kick_start(ctx: MmArc) -> Result<(), String> {
-    // TODO use `orders_kick_start` too
-    let coins_needed_for_kick_start = try_s!(swap_kick_starts(ctx.clone()).await);
-    *(try_s!(ctx.coins_needed_for_kick_start.lock())) = coins_needed_for_kick_start;
-    Ok(())
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-async fn kick_start(ctx: MmArc) -> Result<(), String> {
-    use crate::mm2::lp_ordermatch::orders_kick_start;
-
     let mut coins_needed_for_kick_start = try_s!(swap_kick_starts(ctx.clone()).await);
     coins_needed_for_kick_start.extend(try_s!(orders_kick_start(&ctx).await));
     *(try_s!(ctx.coins_needed_for_kick_start.lock())) = coins_needed_for_kick_start;
