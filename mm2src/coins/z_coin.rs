@@ -3,10 +3,11 @@ use crate::utxo::rpc_clients::{UnspentInfo, UtxoRpcClientEnum, UtxoRpcClientOps,
 use crate::utxo::utxo_common::{big_decimal_from_sat_unsigned, payment_script, UtxoArcBuilder};
 use crate::utxo::{sat_from_big_decimal, utxo_common, ActualTxFee, AdditionalTxData, Address, FeePolicy, HistoryUtxoTx,
                   HistoryUtxoTxMap, RecentlySpentOutPoints, UtxoArc, UtxoCoinBuilder, UtxoCoinFields, UtxoCommonOps,
-                  UtxoWeak, VerboseTransactionFrom};
+                  UtxoFeeDetails, UtxoWeak, VerboseTransactionFrom};
 use crate::{BalanceFut, CoinBalance, FeeApproxStage, FoundSwapTxSpend, HistorySyncState, MarketCoinOps, MmCoin,
             NegotiateSwapContractAddrErr, NumConversError, SwapOps, TradeFee, TradePreimageFut, TradePreimageResult,
-            TradePreimageValue, TransactionEnum, TransactionFut, ValidateAddressResult, WithdrawFut, WithdrawRequest};
+            TradePreimageValue, TransactionDetails, TransactionEnum, TransactionFut, TxFeeDetails,
+            ValidateAddressResult, WithdrawFut, WithdrawRequest};
 use crate::{Transaction, WithdrawError};
 use async_trait::async_trait;
 use bitcrypto::dhash160;
@@ -34,6 +35,7 @@ use serialization::{deserialize, serialize_list, CoinVariant, Reader};
 use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::path::PathBuf;
+use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use zcash_client_backend::decrypt_transaction;
@@ -151,7 +153,7 @@ impl ZCoin {
         &self,
         t_outputs: Vec<TxOut>,
         z_outputs: Vec<ZOutput>,
-    ) -> Result<ZTransaction, MmError<GenTxError>> {
+    ) -> Result<(ZTransaction, AdditionalTxData), MmError<GenTxError>> {
         let _lock = self.z_fields.z_unspent_mutex.lock().await;
         while !self.z_fields.sapling_state_synced.load(AtomicOrdering::Relaxed) {
             Timer::sleep(0.5).await
@@ -168,6 +170,8 @@ impl ZCoin {
         let mut selected_unspents = Vec::new();
         let mut total_input_amount = BigDecimal::from(0);
         let mut change = BigDecimal::from(0);
+
+        let mut received_by_me = 0u64;
 
         for unspent in z_unspents {
             total_input_amount += unspent.amount.to_decimal();
@@ -230,11 +234,16 @@ impl ZCoin {
         }
 
         for z_out in z_outputs {
+            if z_out.to_addr == self.z_fields.my_z_addr {
+                received_by_me += u64::from(z_out.amount);
+            }
+
             tx_builder.add_sapling_output(z_out.viewing_key, z_out.to_addr, z_out.amount, z_out.memo)?;
         }
 
         if change > BigDecimal::from(0) {
             let change_sat = sat_from_big_decimal(&change, self.utxo_arc.decimals)?;
+            received_by_me += change_sat;
 
             tx_builder.add_sapling_output(
                 None,
@@ -254,7 +263,15 @@ impl ZCoin {
         }
 
         let (tx, _) = tx_builder.build(consensus::BranchId::Sapling, &self.z_fields.z_tx_prover)?;
-        Ok(tx)
+
+        let additional_data = AdditionalTxData {
+            received_by_me,
+            spent_by_me: sat_from_big_decimal(&total_input_amount, self.decimals())?,
+            fee_amount: sat_from_big_decimal(&tx_fee, self.decimals())?,
+            unused_change: None,
+            kmd_rewards: None,
+        };
+        Ok((tx, additional_data))
     }
 
     pub async fn send_outputs(
@@ -262,7 +279,7 @@ impl ZCoin {
         t_outputs: Vec<TxOut>,
         z_outputs: Vec<ZOutput>,
     ) -> Result<ZTransaction, MmError<SendOutputsErr>> {
-        let tx = self.gen_tx(t_outputs, z_outputs).await?;
+        let (tx, _) = self.gen_tx(t_outputs, z_outputs).await?;
         let mut tx_bytes = Vec::with_capacity(1024);
         tx.write(&mut tx_bytes).expect("Write should not fail");
 
@@ -543,6 +560,8 @@ async fn z_coin_from_conf_and_request_with_z_key(
 
     let z_tx_prover = LocalTxProver::bundled();
     let my_z_addr_encoded = encode_payment_address(z_mainnet_constants::HRP_SAPLING_PAYMENT_ADDRESS, &my_z_addr);
+    let my_z_key_encoded =
+        encode_extended_spending_key(z_mainnet_constants::HRP_SAPLING_EXTENDED_SPENDING_KEY, &z_spending_key);
 
     let z_fields = ZCoinFields {
         dex_fee_addr,
@@ -559,6 +578,8 @@ async fn z_coin_from_conf_and_request_with_z_key(
         utxo_arc,
         z_fields: Arc::new(z_fields),
     };
+
+    z_coin.z_rpc().z_import_key(&my_z_key_encoded).compat().await?;
     spawn(sapling_state_cache_loop(z_coin.clone()));
     Ok(z_coin)
 }
@@ -569,19 +590,22 @@ impl MarketCoinOps for ZCoin {
     fn my_address(&self) -> Result<String, String> { Ok(self.z_fields.my_z_addr_encoded.clone()) }
 
     fn my_balance(&self) -> BalanceFut<CoinBalance> {
-        let min_conf = 0;
-        let fut = self
-            .utxo_arc
-            .rpc_client
-            .as_ref()
-            .z_get_balance(&self.z_fields.my_z_addr_encoded, min_conf)
-            // at the moment Z coins do not have an unspendable balance
-            .map(|spendable| CoinBalance {
-                spendable: spendable.to_decimal(),
-                unspendable: BigDecimal::from(0),
-            })
-            .map_err(|e| e.into());
-        Box::new(fut)
+        let coin = self.clone();
+        let fut = async move {
+            let unspents = coin.my_z_unspents_ordered().await?;
+            let (spendable, unspendable) = unspents.iter().fold(
+                (BigDecimal::from(0), BigDecimal::from(0)),
+                |(cur_spendable, cur_unspendable), unspent| {
+                    if unspent.confirmations > 0 {
+                        (cur_spendable + unspent.amount.to_decimal(), cur_unspendable)
+                    } else {
+                        (cur_spendable, cur_unspendable + unspent.amount.to_decimal())
+                    }
+                },
+            );
+            Ok(CoinBalance { spendable, unspendable })
+        };
+        Box::new(fut.boxed().compat())
     }
 
     fn base_coin_balance(&self) -> BalanceFut<BigDecimal> { utxo_common::base_coin_balance(self) }
@@ -970,9 +994,58 @@ impl MmCoin for ZCoin {
     fn withdraw(&self, req: WithdrawRequest) -> WithdrawFut {
         let coin = self.clone();
         let fut = async move {
-            let address = decode_payment_address(z_mainnet_constants::HRP_SAPLING_PAYMENT_ADDRESS, &req.to)
-                .map_to_mm(|e| WithdrawError::InvalidAddress(format!("{}", e)))?;
-            unimplemented!()
+            if req.fee.is_some() {
+                return MmError::err(WithdrawError::InternalError(
+                    "Setting a custom withdraw fee is not supported for ZCoin yet".to_owned(),
+                ));
+            }
+
+            let to_addr = decode_payment_address(z_mainnet_constants::HRP_SAPLING_PAYMENT_ADDRESS, &req.to)
+                .map_to_mm(|e| WithdrawError::InvalidAddress(format!("{}", e)))?
+                .or_mm_err(|| WithdrawError::InvalidAddress(format!("Address {} decoded to None", req.to)))?;
+            let amount = if req.max {
+                let balance = coin.my_balance().compat().await?;
+                balance.spendable - BigDecimal::from_str("0.00001").expect("No failure")
+            } else {
+                req.amount
+            };
+            let satoshi = sat_from_big_decimal(&amount, coin.decimals())?;
+            let z_output = ZOutput {
+                to_addr,
+                amount: Amount::from_u64(satoshi)
+                    .map_to_mm(|_| NumConversError(format!("Failed to get ZCash amount from {}", amount)))?,
+                // TODO add optional viewing_key and memo fields to the WithdrawRequest
+                viewing_key: None,
+                memo: None,
+            };
+
+            let (tx, data) = coin.gen_tx(vec![], vec![z_output]).await?;
+            let mut tx_bytes = Vec::with_capacity(1024);
+            tx.write(&mut tx_bytes)
+                .map_to_mm(|e| WithdrawError::InternalError(e.to_string()))?;
+            let mut tx_hash = tx.txid().0.to_vec();
+            tx_hash.reverse();
+
+            let my_balance_change = data.spent_by_me - data.received_by_me;
+
+            Ok(TransactionDetails {
+                tx_hex: tx_bytes.into(),
+                tx_hash: tx_hash.clone().into(),
+                from: vec![coin.z_fields.my_z_addr_encoded.clone()],
+                to: vec![req.to],
+                total_amount: big_decimal_from_sat_unsigned(data.spent_by_me, coin.decimals()),
+                spent_by_me: big_decimal_from_sat_unsigned(data.spent_by_me, coin.decimals()),
+                received_by_me: big_decimal_from_sat_unsigned(data.received_by_me, coin.decimals()),
+                my_balance_change: big_decimal_from_sat_unsigned(my_balance_change, coin.decimals()),
+                block_height: 0,
+                timestamp: 0,
+                fee_details: Some(TxFeeDetails::Utxo(UtxoFeeDetails {
+                    amount: big_decimal_from_sat_unsigned(data.fee_amount, coin.decimals()),
+                })),
+                coin: coin.ticker().to_owned(),
+                internal_id: tx_hash.into(),
+                kmd_rewards: None,
+            })
         };
         Box::new(fut.boxed().compat())
     }

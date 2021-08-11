@@ -1,5 +1,6 @@
 use crate::utxo::rpc_clients::UtxoRpcError;
 use crate::NumConversError;
+use crate::WithdrawError;
 use bigdecimal::BigDecimal;
 use derive_more::Display;
 use rpc::v1::types::Bytes as BytesJson;
@@ -49,6 +50,30 @@ impl From<ZTxBuilderError> for GenTxError {
     fn from(err: ZTxBuilderError) -> GenTxError { GenTxError::TxBuilderError(err) }
 }
 
+impl From<GenTxError> for WithdrawError {
+    fn from(gen_tx: GenTxError) -> WithdrawError {
+        match gen_tx {
+            GenTxError::InsufficientBalance {
+                coin,
+                available,
+                required,
+            } => WithdrawError::NotSufficientBalance {
+                coin,
+                available,
+                required,
+            },
+            GenTxError::Rpc(e) => WithdrawError::Transport(e.to_string()),
+            GenTxError::DecryptedOutputNotFound
+            | GenTxError::FailedToGetMerklePath
+            | GenTxError::PrevTxNotConfirmed
+            | GenTxError::GetWitnessErr(_)
+            | GenTxError::NumConversion(_)
+            | GenTxError::TxBuilderError(_)
+            | GenTxError::TxReadError { .. } => WithdrawError::InternalError(gen_tx.to_string()),
+        }
+    }
+}
+
 #[derive(Debug, Display)]
 #[allow(clippy::large_enum_variant)]
 pub enum SendOutputsErr {
@@ -87,8 +112,13 @@ pub enum ZCoinBuildError {
     BuilderError(String),
     GetAddressError,
     SqliteError(SqliteError),
+    Rpc(UtxoRpcError),
 }
 
 impl From<SqliteError> for ZCoinBuildError {
     fn from(err: SqliteError) -> ZCoinBuildError { ZCoinBuildError::SqliteError(err) }
+}
+
+impl From<UtxoRpcError> for ZCoinBuildError {
+    fn from(err: UtxoRpcError) -> ZCoinBuildError { ZCoinBuildError::Rpc(err) }
 }

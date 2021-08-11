@@ -98,6 +98,8 @@ pub trait ZRpcOps {
     ) -> UtxoRpcFut<Vec<ZUnspent>>;
 
     fn z_send_many(&self, from_address: &str, send_to: Vec<ZSendManyItem>) -> UtxoRpcFut<String>;
+
+    fn z_import_key(&self, key: &str) -> UtxoRpcFut<()>;
 }
 
 impl ZRpcOps for NativeClient {
@@ -124,6 +126,11 @@ impl ZRpcOps for NativeClient {
 
     fn z_send_many(&self, from_address: &str, send_to: Vec<ZSendManyItem>) -> UtxoRpcFut<String> {
         let fut = rpc_func!(self, "z_sendmany", from_address, send_to);
+        Box::new(fut.map_to_mm_fut(UtxoRpcError::from))
+    }
+
+    fn z_import_key(&self, key: &str) -> UtxoRpcFut<()> {
+        let fut = rpc_func!(self, "z_importkey", key, "no");
         Box::new(fut.map_to_mm_fut(UtxoRpcError::from))
     }
 }
