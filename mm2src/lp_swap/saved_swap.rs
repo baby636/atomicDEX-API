@@ -207,7 +207,7 @@ mod native_impl {
 #[cfg(target_arch = "wasm32")]
 mod wasm_impl {
     use super::*;
-    use crate::mm2::lp_swap::swap_db::{DbTransactionError, InitDbError, SavedSwapTable};
+    use crate::mm2::lp_swap::swap_wasm_db::{DbTransactionError, InitDbError, SavedSwapTable};
     use crate::mm2::lp_swap::SwapsContext;
     use serde_json as json;
 
@@ -293,7 +293,7 @@ mod wasm_impl {
 #[cfg(target_arch = "wasm32")]
 mod tests {
     use super::*;
-    use crate::mm2::lp_swap::swap_db::{ItemId, SavedSwapTable};
+    use crate::mm2::lp_swap::swap_wasm_db::{ItemId, SavedSwapTable};
     use crate::mm2::lp_swap::SwapsContext;
     use common::mm_ctx::MmCtxBuilder;
     use serde_json as json;

@@ -87,19 +87,19 @@ use uuid::Uuid;
 #[path = "lp_swap/check_balance.rs"] mod check_balance;
 #[path = "lp_swap/trade_preimage.rs"] mod trade_preimage;
 
-#[path = "lp_swap/my_swaps_db.rs"] mod my_swaps_db;
+#[path = "lp_swap/my_swaps_storage.rs"] mod my_swaps_storage;
 #[path = "lp_swap/saved_swap.rs"] mod saved_swap;
 #[path = "lp_swap/swap_lock.rs"] mod swap_lock;
 
 #[cfg(target_arch = "wasm32")]
-#[path = "lp_swap/swap_db.rs"]
-mod swap_db;
+#[path = "lp_swap/swap_wasm_db.rs"]
+mod swap_wasm_db;
 
 pub use check_balance::{check_other_coin_balance_for_swap, CheckBalanceError};
 use maker_swap::MakerSwapEvent;
 pub use maker_swap::{calc_max_maker_vol, check_balance_for_maker_swap, maker_swap_trade_preimage, run_maker_swap,
                      MakerSavedSwap, MakerSwap, MakerTradePreimage, RunMakerSwapInput};
-use my_swaps_db::{MySwaps, MySwapsOps};
+use my_swaps_storage::{MySwapsOps, MySwapsStorage};
 use pubkey_banning::BanReason;
 pub use pubkey_banning::{ban_pubkey_rpc, is_pubkey_banned, list_banned_pubkeys_rpc, unban_pubkeys_rpc};
 pub use saved_swap::{SavedSwap, SavedSwapError, SavedSwapIo, SavedSwapResult};
@@ -113,7 +113,7 @@ pub const SWAP_PREFIX: TopicPrefix = "swap";
 
 cfg_wasm32! {
     use common::indexed_db::{ConstructibleDb, DbLocked};
-    use swap_db::{InitDbResult, SwapDb};
+    use swap_wasm_db::{InitDbResult, SwapDb};
 
     pub type SwapDbLocked<'a> = DbLocked<'a, SwapDb>;
 }
@@ -640,7 +640,7 @@ pub async fn insert_new_swap_to_db(
     uuid: Uuid,
     started_at: u64,
 ) -> Result<(), String> {
-    MySwaps::new(ctx)
+    MySwapsStorage::new(ctx)
         .save_new_swap(my_coin, other_coin, uuid, started_at)
         .await
         .map_err(|e| ERRL!("{}", e))
@@ -812,7 +812,11 @@ pub struct MySwapsFilter {
 /// Returns *all* uuids of swaps, which match the selected filter.
 pub async fn all_swaps_uuids_by_filter(ctx: MmArc, req: Json) -> Result<Response<Vec<u8>>, String> {
     let filter: MySwapsFilter = try_s!(json::from_value(req));
-    let db_result = try_s!(MySwaps::new(ctx).my_recent_swaps_with_filters(&filter, None).await);
+    let db_result = try_s!(
+        MySwapsStorage::new(ctx)
+            .my_recent_swaps_with_filters(&filter, None)
+            .await
+    );
 
     let res_js = json!({
         "result": {
@@ -850,7 +854,7 @@ pub struct MyRecentSwapsUuids {
 pub async fn my_recent_swaps(ctx: MmArc, req: Json) -> Result<Response<Vec<u8>>, String> {
     let req: MyRecentSwapsReq = try_s!(json::from_value(req));
     let db_result = try_s!(
-        MySwaps::new(ctx.clone())
+        MySwapsStorage::new(ctx.clone())
             .my_recent_swaps_with_filters(&req.filter, Some(&req.paging_options))
             .await
     );

@@ -71,7 +71,7 @@ mod native_lock {
 #[cfg(target_arch = "wasm32")]
 mod wasm_lock {
     use super::*;
-    use crate::mm2::lp_swap::swap_db::{DbTransactionError, InitDbError, ItemId, SwapLockTable};
+    use crate::mm2::lp_swap::swap_wasm_db::{DbTransactionError, InitDbError, ItemId, SwapLockTable};
     use crate::mm2::lp_swap::SwapsContext;
     use common::executor::spawn;
     use common::log::{debug, error};
@@ -198,7 +198,7 @@ mod wasm_lock {
 mod tests {
     use super::wasm_lock::*;
     use super::*;
-    use crate::mm2::lp_swap::swap_db::SwapLockTable;
+    use crate::mm2::lp_swap::swap_wasm_db::SwapLockTable;
     use crate::mm2::lp_swap::SwapsContext;
     use common::executor::Timer;
     use common::indexed_db::ItemId;

@@ -32,12 +32,12 @@ pub trait MySwapsOps {
     ) -> MySwapsResult<MyRecentSwapsUuids>;
 }
 
-pub struct MySwaps {
+pub struct MySwapsStorage {
     ctx: MmArc,
 }
 
-impl MySwaps {
-    pub fn new(ctx: MmArc) -> MySwaps { MySwaps { ctx } }
+impl MySwapsStorage {
+    pub fn new(ctx: MmArc) -> MySwapsStorage { MySwapsStorage { ctx } }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -60,7 +60,7 @@ mod native_impl {
     }
 
     #[async_trait]
-    impl MySwapsOps for MySwaps {
+    impl MySwapsOps for MySwapsStorage {
         async fn save_new_swap(
             &self,
             my_coin: &str,
@@ -94,8 +94,8 @@ mod native_impl {
 #[cfg(target_arch = "wasm32")]
 mod wasm_impl {
     use super::*;
-    use crate::mm2::lp_swap::swap_db::cursor_prelude::*;
-    use crate::mm2::lp_swap::swap_db::{DbTransactionError, InitDbError, MySwapsFiltersTable};
+    use crate::mm2::lp_swap::swap_wasm_db::cursor_prelude::*;
+    use crate::mm2::lp_swap::swap_wasm_db::{DbTransactionError, InitDbError, MySwapsFiltersTable};
     use crate::mm2::lp_swap::SwapsContext;
     use std::collections::BTreeSet;
     use uuid::Uuid;
@@ -149,7 +149,7 @@ mod wasm_impl {
     }
 
     #[async_trait]
-    impl MySwapsOps for MySwaps {
+    impl MySwapsOps for MySwapsStorage {
         async fn save_new_swap(
             &self,
             my_coin: &str,
@@ -341,7 +341,7 @@ mod wasm_tests {
         filters: MySwapsFilter,
     ) {
         let ctx = MmCtxBuilder::new().with_test_db_namespace().into_mm_arc();
-        let my_swaps = MySwaps::new(ctx);
+        let my_swaps = MySwapsStorage::new(ctx);
 
         let mut expected_uuids = BTreeSet::new();
         let mut rng = rand::thread_rng();
@@ -361,13 +361,13 @@ mod wasm_tests {
             my_swaps
                 .save_new_swap(my_coin, other_coin, uuid, started_at)
                 .await
-                .expect("!MySwaps::save_new_swap");
+                .expect("!MySwapsStorage::save_new_swap");
         }
 
         let actual = my_swaps
             .my_recent_swaps_with_filters(&filters, None)
             .await
-            .expect("!MySwaps::my_recent_swaps_with_filters");
+            .expect("!MySwapsStorage::my_recent_swaps_with_filters");
 
         let expected_total_count = expected_uuids.len();
         let expected = MyRecentSwapsUuids {
