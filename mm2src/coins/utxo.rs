@@ -47,7 +47,7 @@ use futures::lock::{Mutex as AsyncMutex, MutexGuard as AsyncMutexGuard};
 use futures::stream::StreamExt;
 use futures01::Future;
 use keys::bytes::Bytes;
-pub use keys::{Address, AddressFormat as UtxoAddressFormat, KeyPair, Private, Public, Secret, Type};
+pub use keys::{Address, AddressFormat as UtxoAddressFormat, KeyPair, Private, Public, Secret, Type as ScriptType};
 #[cfg(test)] use mocktopus::macros::*;
 use num_traits::ToPrimitive;
 use primitives::hash::{H256, H264, H512};
@@ -1197,7 +1197,7 @@ pub trait UtxoCoinBuilder {
             hrp: conf.bech32_hrp.clone(),
             addr_format,
         };
-        let my_script_pubkey = output_script(&my_address).to_bytes();
+        let my_script_pubkey = output_script(&my_address, ScriptType::P2PKH).to_bytes();
         let rpc_client = try_s!(self.rpc_client().await);
         let tx_fee = try_s!(self.tx_fee(&rpc_client).await);
         let decimals = try_s!(self.decimals(&rpc_client).await);
@@ -1714,10 +1714,9 @@ where
             | KmdRewardsAccrueInfo::NotAccruedReason(KmdRewardsNotAccruedReason::TransactionInMempool)
             | KmdRewardsAccrueInfo::NotAccruedReason(KmdRewardsNotAccruedReason::OneHourNotPassedYet) => {
                 let start_at = Some(kmd_interest_accrue_start_at(locktime));
-                let stop_at = match tx_info.height {
-                    Some(height) => Some(kmd_interest_accrue_stop_at(height, locktime)),
-                    _ => None,
-                };
+                let stop_at = tx_info
+                    .height
+                    .map(|height| kmd_interest_accrue_stop_at(height, locktime));
                 (start_at, stop_at)
             },
             _ => (None, None),
@@ -1990,10 +1989,13 @@ fn script_sig(message: &H256, key_pair: &KeyPair, fork_id: u32) -> Result<Bytes,
     Ok(sig_script)
 }
 
-pub fn output_script(address: &Address) -> Script {
+pub fn output_script(address: &Address, script_type: ScriptType) -> Script {
     match address.addr_format {
         UtxoAddressFormat::Segwit => Builder::build_p2wpkh(&address.hash),
-        _ => Builder::build_p2pkh(&address.hash),
+        _ => match script_type {
+            ScriptType::P2PKH => Builder::build_p2pkh(&address.hash),
+            ScriptType::P2SH => Builder::build_p2sh(&address.hash),
+        },
     }
 }
 
@@ -2004,7 +2006,7 @@ pub fn address_by_conf_and_pubkey_str(
     addr_format: UtxoAddressFormat,
 ) -> Result<String, String> {
     let null = Json::Null;
-    let conf_builder = UtxoConfBuilder::new(&conf, &null, coin);
+    let conf_builder = UtxoConfBuilder::new(conf, &null, coin);
     let utxo_conf = try_s!(conf_builder.build());
     let pubkey_bytes = try_s!(hex::decode(pubkey));
     let hash = dhash160(&pubkey_bytes);

@@ -66,6 +66,7 @@ impl AddressFormat {
     pub fn is_legacy(&self) -> bool { matches!(*self, AddressFormat::Standard) }
 }
 
+// TODO add ScriptType field to this struct for easier use of output_script function
 /// `AddressHash` with prefix and t addr zcash prefix
 #[derive(Debug, PartialEq, Clone)]
 pub struct Address {
@@ -212,7 +213,7 @@ impl Address {
                 pub_addr_prefix,
                 p2sh_addr_prefix,
             } => self
-                .to_cashaddress(&network, *pub_addr_prefix, *p2sh_addr_prefix)
+                .to_cashaddress(network, *pub_addr_prefix, *p2sh_addr_prefix)
                 .and_then(|cashaddress| cashaddress.encode()),
         }
     }

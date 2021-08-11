@@ -141,6 +141,11 @@ pub enum AdexBehaviourCmd {
     GetRelayMesh {
         result_tx: oneshot::Sender<Vec<String>>,
     },
+    /// Add a reserved peer to the peer exchange.
+    AddReservedPeer {
+        peer: PeerId,
+        addresses: PeerAddresses,
+    },
     PropagateMessage {
         message_id: MessageId,
         propagation_source: PeerId,
@@ -370,6 +375,10 @@ impl AtomicDexBehaviour {
                     error!("Result rx is dropped");
                 }
             },
+            AdexBehaviourCmd::AddReservedPeer { peer, addresses } => {
+                self.peers_exchange
+                    .add_peer_addresses_to_reserved_peers(&peer, addresses);
+            },
             AdexBehaviourCmd::PropagateMessage {
                 message_id,
                 propagation_source,
@@ -408,7 +417,8 @@ impl NetworkBehaviourEventProcess<FloodsubEvent> for AtomicDexBehaviour {
                             Ok(a) => a,
                             Err(_) => return,
                         };
-                        self.peers_exchange.add_peer_addresses(&message.source, addresses);
+                        self.peers_exchange
+                            .add_peer_addresses_to_known_peers(&message.source, addresses);
                     }
                 }
             }
@@ -503,9 +513,11 @@ fn maintain_connection_to_relays(swarm: &mut AtomicDexSwarm, bootstrap_addresses
             .filter(|peer| !relays_mesh.contains(peer))
             .collect();
         for peer in not_in_mesh.choose_multiple(&mut rng, to_disconnect_num) {
-            info!("Disconnecting peer {}", peer);
-            if Swarm::disconnect_peer_id(swarm, **peer).is_err() {
-                error!("Peer {} disconnect error", peer);
+            if !swarm.behaviour().peers_exchange.is_reserved_peer(*peer) {
+                info!("Disconnecting peer {}", peer);
+                if Swarm::disconnect_peer_id(swarm, **peer).is_err() {
+                    error!("Peer {} disconnect error", peer);
+                }
             }
         }
     }
@@ -518,7 +530,7 @@ fn maintain_connection_to_relays(swarm: &mut AtomicDexSwarm, bootstrap_addresses
 }
 
 fn announce_my_addresses(swarm: &mut AtomicDexSwarm) {
-    let global_listeners: PeerAddresses = Swarm::listeners(&swarm)
+    let global_listeners: PeerAddresses = Swarm::listeners(swarm)
         .filter(|listener| {
             for protocol in listener.iter() {
                 if let Protocol::Ip4(ip) = protocol {
@@ -669,7 +681,7 @@ fn start_gossipsub(
             // so `get_all_network_seednodes` returns an empty list.
             for (peer_id, addr) in get_all_network_seednodes(netid) {
                 let multiaddr = addr.try_to_multiaddr(network_info)?;
-                peers_exchange.add_peer_addresses(&peer_id, iter::once(multiaddr).collect());
+                peers_exchange.add_peer_addresses_to_known_peers(&peer_id, iter::once(multiaddr).collect());
                 gossipsub.add_explicit_relay(peer_id);
             }
         }
@@ -684,12 +696,12 @@ fn start_gossipsub(
             event_tx,
             spawn_fn,
             cmd_rx,
-            gossipsub,
+            netid,
             floodsub,
+            gossipsub,
             request_response,
             peers_exchange,
             ping,
-            netid,
         };
         libp2p::swarm::SwarmBuilder::new(transport, adex_behavior, local_peer_id)
             .executor(Box::new(&*SWARM_RUNTIME))

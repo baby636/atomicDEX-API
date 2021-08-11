@@ -18,7 +18,7 @@
 //
 
 use coins::register_balance_update_handler;
-use mm2_libp2p::{spawn_gossipsub, NetworkPorts, NodeType, RelayAddress};
+use mm2_libp2p::{spawn_gossipsub, NodeType, RelayAddress};
 use rand::rngs::SmallRng;
 use rand::{random, Rng, SeedableRng};
 use serde_json::{self as json};
@@ -30,7 +30,7 @@ use std::str;
 
 #[cfg(not(target_arch = "wasm32"))]
 use crate::mm2::database::init_and_migrate_db;
-use crate::mm2::lp_network::{p2p_event_process_loop, P2PContext};
+use crate::mm2::lp_network::{lp_network_ports, p2p_event_process_loop, P2PContext};
 use crate::mm2::lp_ordermatch::{broadcast_maker_orders_keep_alive_loop, lp_ordermatch_loop, orders_kick_start,
                                 BalanceUpdateOrdermatchHandler};
 use crate::mm2::lp_swap::{running_swaps_num, swap_kick_starts};
@@ -60,43 +60,16 @@ fn default_seednodes(netid: u16) -> Vec<RelayAddress> {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn default_seednodes(netid: u16) -> Vec<RelayAddress> {
+    use crate::mm2::lp_network::addr_to_ipv4_string;
     if netid == 7777 {
         NETID_7777_SEEDNODES
             .iter()
-            .filter_map(|seed| {
-                let seed_url = format!("{}:0", *seed);
-                seed_to_ipv4_string(&seed_url)
-            })
+            .filter_map(|seed| addr_to_ipv4_string(*seed).ok())
             .map(RelayAddress::IPv4)
             .collect()
     } else {
         Vec::new()
     }
-}
-
-pub fn lp_ports(netid: u16) -> Result<(u16, u16, u16), String> {
-    const LP_RPCPORT: u16 = 7783;
-    let max_netid = (65535 - 40 - LP_RPCPORT) / 4;
-    if netid > max_netid {
-        return ERR!("Netid {} is larger than max {}", netid, max_netid);
-    }
-
-    let other_ports = if netid != 0 {
-        let net_mod = netid % 10;
-        let net_div = netid / 10;
-        (net_div * 40) + LP_RPCPORT + net_mod
-    } else {
-        LP_RPCPORT
-    };
-    Ok((other_ports + 10, other_ports + 20, other_ports + 30))
-}
-
-pub fn lp_network_ports(netid: u16) -> Result<NetworkPorts, String> {
-    let (_, network_port, network_ws_port) = try_s!(lp_ports(netid));
-    Ok(NetworkPorts {
-        tcp: network_port,
-        ws: network_ws_port,
-    })
 }
 
 /// Invokes `OS_ensure_directory`,
@@ -307,31 +280,6 @@ fn test_ip(ctx: &MmArc, ip: IpAddr) -> Result<(), String> {
                 continue;
             },
         }
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn seed_to_ipv4_string(seed: &str) -> Option<String> {
-    use std::net::ToSocketAddrs;
-    match seed.to_socket_addrs() {
-        Ok(mut iter) => match iter.next() {
-            Some(addr) => {
-                if addr.is_ipv4() {
-                    Some(addr.ip().to_string())
-                } else {
-                    warn!("Seed {} resolved to IPv6 {} which is not supported", seed, addr);
-                    None
-                }
-            },
-            None => {
-                warn!("Seed {} to_socket_addrs empty iter", seed);
-                None
-            },
-        },
-        Err(e) => {
-            error!("Couldn't resolve '{}' seed: {}", seed, e);
-            None
-        },
     }
 }
 

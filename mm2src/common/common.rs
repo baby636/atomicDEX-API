@@ -11,13 +11,12 @@
 //!                   binary
 
 #![allow(uncommon_codepoints)]
-#![feature(non_ascii_idents, integer_atomics, panic_info_message)]
+#![feature(integer_atomics, panic_info_message)]
 #![feature(async_closure)]
 #![feature(hash_raw_entry)]
 #![feature(negative_impls)]
 #![feature(auto_traits)]
 #![feature(drain_filter)]
-#![feature(const_fn)]
 
 #[macro_use] extern crate arrayref;
 #[macro_use] extern crate fomat_macros;
@@ -115,7 +114,6 @@ pub mod wasm_http;
 #[path = "transport/wasm_ws.rs"]
 pub mod wasm_ws;
 
-use atomic::Atomic;
 use backtrace::SymbolName;
 use bigdecimal::BigDecimal;
 use futures::compat::Future01CompatExt;
@@ -526,7 +524,9 @@ pub fn set_panic_hook() {
 /// NB: https://github.com/rust-lang/backtrace-rs/issues/227
 #[cfg(not(target_arch = "wasm32"))]
 pub fn set_panic_hook() {
-    thread_local! {static ENTERED: Atomic<bool> = Atomic::new (false);}
+    use std::sync::atomic::AtomicBool;
+
+    thread_local! {static ENTERED: AtomicBool = AtomicBool::new(false);}
 
     set_hook(Box::new(|info: &PanicInfo| {
         // Stack tracing and logging might panic (in `println!` for example).
@@ -1510,7 +1510,7 @@ pub fn writeln(line: &str) {
 static mut PROCESS_LOG_TAIL: [u8; 0x10000] = [0; 0x10000];
 
 #[cfg(target_arch = "wasm32")]
-static TAIL_CUR: Atomic<usize> = Atomic::new(0);
+static TAIL_CUR: AtomicUsize = AtomicUsize::new(0);
 
 /// Keep a tail of the log in RAM for the integration tests.
 #[cfg(target_arch = "wasm32")]

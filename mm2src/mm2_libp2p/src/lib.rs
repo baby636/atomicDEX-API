@@ -5,7 +5,7 @@
 mod adex_ping;
 pub mod atomicdex_behaviour;
 mod network;
-mod peers_exchange;
+pub mod peers_exchange;
 pub mod relay_address;
 pub mod request_response;
 mod runtime;
@@ -18,6 +18,7 @@ use sha2::{Digest, Sha256};
 pub use atomicdex_behaviour::{spawn_gossipsub, AdexBehaviourError, NodeType};
 pub use atomicdex_gossipsub::{GossipsubEvent, GossipsubMessage, MessageId};
 pub use libp2p::{Multiaddr, PeerId};
+pub use peers_exchange::PeerAddresses;
 pub use relay_address::{RelayAddress, RelayAddressError};
 use serde::{de, Deserialize, Serialize, Serializer};
 

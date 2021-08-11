@@ -40,11 +40,9 @@ use mm2_libp2p::{decode_signed, encode_and_sign, encode_message, pub_sub_topic, 
 #[cfg(test)] use mocktopus::macros::*;
 use num_rational::BigRational;
 use num_traits::identities::Zero;
-use order_requests_tracker::OrderRequestsTracker;
 use rpc::v1::types::H256 as H256Json;
 use serde_json::{self as json, Value as Json};
-use sp_trie::{delta_trie_root, DBValue, HashDBT, MemoryDB, Trie, TrieConfiguration, TrieDB, TrieDBMut, TrieHash,
-              TrieMut};
+use sp_trie::{delta_trie_root, MemoryDB, Trie, TrieConfiguration, TrieDB, TrieDBMut, TrieHash, TrieMut};
 use std::collections::hash_map::{Entry, HashMap, RawEntryMut};
 use std::collections::{BTreeSet, HashSet};
 use std::convert::TryInto;
@@ -276,7 +274,7 @@ async fn request_and_fill_orderbook(ctx: &MmArc, base: &str, rel: &str) -> Resul
         None => return Ok(()),
     };
 
-    let ordermatch_ctx = OrdermatchContext::from_ctx(&ctx).unwrap();
+    let ordermatch_ctx = OrdermatchContext::from_ctx(ctx).unwrap();
     let mut orderbook = ordermatch_ctx.orderbook.lock().await;
 
     let alb_pair = alb_ordered_pair(base, rel);
@@ -306,13 +304,13 @@ async fn request_and_fill_orderbook(ctx: &MmArc, base: &str, rel: &str) -> Resul
 /// Insert or update an order `req`.
 /// Note this function locks the [`OrdermatchContext::orderbook`] async mutex.
 async fn insert_or_update_order(ctx: &MmArc, item: OrderbookItem) {
-    let ordermatch_ctx = OrdermatchContext::from_ctx(&ctx).expect("from_ctx failed");
+    let ordermatch_ctx = OrdermatchContext::from_ctx(ctx).expect("from_ctx failed");
     let mut orderbook = ordermatch_ctx.orderbook.lock().await;
     orderbook.insert_or_update_order_update_trie(item)
 }
 
 async fn delete_order(ctx: &MmArc, pubkey: &str, uuid: Uuid) {
-    let ordermatch_ctx = OrdermatchContext::from_ctx(&ctx).expect("from_ctx failed");
+    let ordermatch_ctx = OrdermatchContext::from_ctx(ctx).expect("from_ctx failed");
 
     let mut inactive = ordermatch_ctx.inactive_orders.lock().await;
     match inactive.get(&uuid) {
@@ -336,7 +334,7 @@ async fn delete_order(ctx: &MmArc, pubkey: &str, uuid: Uuid) {
 }
 
 async fn delete_my_order(ctx: &MmArc, uuid: Uuid) {
-    let ordermatch_ctx: Arc<OrdermatchContext> = OrdermatchContext::from_ctx(&ctx).expect("from_ctx failed");
+    let ordermatch_ctx: Arc<OrdermatchContext> = OrdermatchContext::from_ctx(ctx).expect("from_ctx failed");
     let mut orderbook = ordermatch_ctx.orderbook.lock().await;
     orderbook.remove_order_trie_update(uuid);
 }
@@ -820,7 +818,7 @@ async fn maker_order_created_p2p_notify(
 }
 
 async fn process_my_maker_order_updated(ctx: &MmArc, message: &new_protocol::MakerOrderUpdated) {
-    let ordermatch_ctx = OrdermatchContext::from_ctx(&ctx).expect("from_ctx failed");
+    let ordermatch_ctx = OrdermatchContext::from_ctx(ctx).expect("from_ctx failed");
     let mut orderbook = ordermatch_ctx.orderbook.lock().await;
 
     let uuid = message.uuid();
@@ -2030,7 +2028,7 @@ fn get_trie_mut<'a>(
     if *root == H64::default() {
         Ok(TrieDBMut::new(mem_db, root))
     } else {
-        TrieDBMut::from_existing(mem_db, root).map_err(|e| ERRL!("{}", e))
+        TrieDBMut::from_existing(mem_db, root).map_err(|e| ERRL!("{:?}", e))
     }
 }
 
@@ -2065,19 +2063,6 @@ fn pair_history_mut<'a>(
         RawEntryMut::Occupied(e) => e.into_mut(),
         RawEntryMut::Vacant(e) => e.insert(pair.to_owned(), Default::default()).1,
     }
-}
-
-#[allow(dead_code)]
-fn populate_trie<'db, T: TrieConfiguration>(
-    db: &'db mut dyn HashDBT<T::Hash, DBValue>,
-    root: &'db mut TrieHash<T>,
-    v: &[(Vec<u8>, Vec<u8>)],
-) -> Result<TrieDBMut<'db, T>, String> {
-    let mut t = TrieDBMut::<T>::new(db, root);
-    for (key, val) in v {
-        try_s!(t.insert(key, val));
-    }
-    Ok(t)
 }
 
 /// `parity_util_mem::malloc_size` crushes for some reason on wasm32
@@ -2167,7 +2152,7 @@ impl Orderbook {
         let order_bytes = rmp_serde::to_vec(&order).expect("Serialization should never fail");
         if let Err(e) = pair_trie.insert(order.uuid.as_bytes(), &order_bytes) {
             log::error!(
-                "Error {} on insertion to trie. Key {}, value {:?}",
+                "Error {:?} on insertion to trie. Key {}, value {:?}",
                 e,
                 order.uuid,
                 order_bytes
@@ -2373,7 +2358,6 @@ struct OrdermatchContext {
     pub my_maker_orders: AsyncMutex<HashMap<Uuid, MakerOrder>>,
     pub my_taker_orders: AsyncMutex<HashMap<Uuid, TakerOrder>>,
     pub orderbook: AsyncMutex<Orderbook>,
-    pub order_requests_tracker: AsyncMutex<OrderRequestsTracker>,
     pub inactive_orders: AsyncMutex<HashMap<Uuid, OrderbookItem>>,
     #[cfg(target_arch = "wasm32")]
     ordermatch_db: ConstructibleDb<OrdermatchDb>,
@@ -2397,7 +2381,6 @@ impl OrdermatchContext {
                 my_maker_orders: Default::default(),
                 my_taker_orders: Default::default(),
                 orderbook: Default::default(),
-                order_requests_tracker: Default::default(),
                 inactive_orders: Default::default(),
                 ordermatch_db: ConstructibleDb::from_ctx(ctx),
             })
@@ -2811,7 +2794,6 @@ async fn process_maker_reserved(ctx: MmArc, from_pubkey: H256Json, reserved_msg:
         my_order
             .matches
             .insert(taker_match.reserved.maker_order_uuid, taker_match);
-
         error_if!(MyOrdersStorage::new(ctx).update_active_taker_order(my_order).await);
     }
 }
@@ -3149,8 +3131,8 @@ pub async fn lp_auto_buy(
         _ => return ERR!("Auto buy must be called only from buy/sell RPC methods"),
     };
     let request_orderbook = false;
-    try_s!(subscribe_to_orderbook_topic(&ctx, &input.base, &input.rel, request_orderbook).await);
-    let ordermatch_ctx = try_s!(OrdermatchContext::from_ctx(&ctx));
+    try_s!(subscribe_to_orderbook_topic(ctx, &input.base, &input.rel, request_orderbook).await);
+    let ordermatch_ctx = try_s!(OrdermatchContext::from_ctx(ctx));
     let mut my_taker_orders = ordermatch_ctx.my_taker_orders.lock().await;
     let our_public_id = try_s!(ctx.public_id());
     let rel_volume = &input.volume * &input.price;
@@ -3589,11 +3571,11 @@ async fn get_max_volume(ctx: &MmArc, my_coin: &MmCoinEnum, other_coin: &MmCoinEn
             .compat()
             .await
     );
-    try_s!(check_other_coin_balance_for_swap(&ctx, &other_coin, None, other_coin_trade_fee).await);
+    try_s!(check_other_coin_balance_for_swap(ctx, other_coin, None, other_coin_trade_fee).await);
     // calculate max maker volume
     // note the `calc_max_maker_vol` returns [`CheckBalanceError::NotSufficientBalance`] error if the balance of `base_coin` is not sufficient
     Ok(try_s!(
-        calc_max_maker_vol(&ctx, &my_coin, &my_balance, FeeApproxStage::OrderIssue).await
+        calc_max_maker_vol(ctx, my_coin, &my_balance, FeeApproxStage::OrderIssue).await
     ))
 }
 
@@ -3844,10 +3826,10 @@ pub async fn update_maker_order(ctx: MmArc, req: Json) -> Result<Response<Vec<u8
                 return ERR!("Order {} is being matched now, can't update", req.uuid);
             }
 
-            let new_change = HistoricalOrder::build(&update_msg, &order);
+            let new_change = HistoricalOrder::build(&update_msg, order);
             order.apply_updated(&update_msg);
             order.changes_history.get_or_insert(Vec::new()).push(new_change);
-            save_maker_order_on_update(ctx.clone(), &order).await;
+            save_maker_order_on_update(ctx.clone(), order).await;
             update_msg.with_new_max_volume((new_volume - reserved_amount).into());
             (MakerOrderForRpc::from(&*order), order.base.as_str(), order.rel.as_str())
         },
@@ -3914,9 +3896,9 @@ pub async fn order_status(ctx: MmArc, req: Json) -> Result<Response<Vec<u8>>, St
         order: OrderForRpc::from(&order),
         cancellation_reason,
     });
-    return Response::builder()
+    Response::builder()
         .body(json::to_vec(&res).expect("Serialization failed"))
-        .map_err(|e| ERRL!("{}", e));
+        .map_err(|e| ERRL!("{}", e))
 }
 
 #[derive(Display)]
@@ -4467,7 +4449,7 @@ pub(self) async fn subscribe_to_orderbook_topic(
                 e.insert(OrderbookRequestingState::NotRequested {
                     subscribed_at: current_timestamp,
                 });
-                subscribe_to_topic(&ctx, topic.clone()).await;
+                subscribe_to_topic(ctx, topic.clone()).await;
                 // orderbook is not filled
                 false
             },
@@ -4493,7 +4475,7 @@ pub(self) async fn subscribe_to_orderbook_topic(
     };
 
     if !is_orderbook_filled && request_orderbook {
-        try_s!(request_and_fill_orderbook(&ctx, base, rel).await);
+        try_s!(request_and_fill_orderbook(ctx, base, rel).await);
     }
 
     Ok(())

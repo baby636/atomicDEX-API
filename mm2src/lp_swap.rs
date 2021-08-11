@@ -357,7 +357,7 @@ impl SwapsContext {
 
 /// Get total amount of selected coin locked by all currently ongoing swaps
 pub fn get_locked_amount(ctx: &MmArc, coin: &str) -> MmNumber {
-    let swap_ctx = SwapsContext::from_ctx(&ctx).unwrap();
+    let swap_ctx = SwapsContext::from_ctx(ctx).unwrap();
     let swap_lock = swap_ctx.running_swaps.lock().unwrap();
 
     swap_lock
@@ -380,7 +380,7 @@ pub fn get_locked_amount(ctx: &MmArc, coin: &str) -> MmNumber {
 
 /// Get number of currently running swaps
 pub fn running_swaps_num(ctx: &MmArc) -> u64 {
-    let swap_ctx = SwapsContext::from_ctx(&ctx).unwrap();
+    let swap_ctx = SwapsContext::from_ctx(ctx).unwrap();
     let swaps = swap_ctx.running_swaps.lock().unwrap();
     swaps.iter().fold(0, |total, swap| match swap.upgrade() {
         Some(_) => total + 1,
@@ -390,7 +390,7 @@ pub fn running_swaps_num(ctx: &MmArc) -> u64 {
 
 /// Get total amount of selected coin locked by all currently ongoing swaps except the one with selected uuid
 fn get_locked_amount_by_other_swaps(ctx: &MmArc, except_uuid: &Uuid, coin: &str) -> MmNumber {
-    let swap_ctx = SwapsContext::from_ctx(&ctx).unwrap();
+    let swap_ctx = SwapsContext::from_ctx(ctx).unwrap();
     let swap_lock = swap_ctx.running_swaps.lock().unwrap();
 
     swap_lock
@@ -413,7 +413,7 @@ fn get_locked_amount_by_other_swaps(ctx: &MmArc, except_uuid: &Uuid, coin: &str)
 }
 
 pub fn active_swaps_using_coin(ctx: &MmArc, coin: &str) -> Result<Vec<Uuid>, String> {
-    let swap_ctx = try_s!(SwapsContext::from_ctx(&ctx));
+    let swap_ctx = try_s!(SwapsContext::from_ctx(ctx));
     let swaps = try_s!(swap_ctx.running_swaps.lock());
     let mut uuids = vec![];
     for swap in swaps.iter() {
@@ -427,7 +427,7 @@ pub fn active_swaps_using_coin(ctx: &MmArc, coin: &str) -> Result<Vec<Uuid>, Str
 }
 
 pub fn active_swaps(ctx: &MmArc) -> Result<Vec<Uuid>, String> {
-    let swap_ctx = try_s!(SwapsContext::from_ctx(&ctx));
+    let swap_ctx = try_s!(SwapsContext::from_ctx(ctx));
     let swaps = try_s!(swap_ctx.running_swaps.lock());
     let mut uuids = vec![];
     for swap in swaps.iter() {
