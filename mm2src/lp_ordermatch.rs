@@ -3879,18 +3879,6 @@ struct OrderForRpcWithCancellationReason<'a> {
     cancellation_reason: &'a str,
 }
 
-#[cfg(target_arch = "wasm32")]
-pub async fn order_status(_ctx: MmArc, _req: Json) -> Result<Response<Vec<u8>>, String> {
-    let res = json!({
-        "error": format!("'order_status' is only supported in native mode"),
-    });
-    Response::builder()
-        .status(404)
-        .body(json::to_vec(&res).expect("Serialization failed"))
-        .map_err(|e| ERRL!("{}", e))
-}
-
-#[cfg(not(target_arch = "wasm32"))]
 pub async fn order_status(ctx: MmArc, req: Json) -> Result<Response<Vec<u8>>, String> {
     let req: OrderStatusReq = try_s!(json::from_value(req));
 
