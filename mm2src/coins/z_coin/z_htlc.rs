@@ -9,7 +9,7 @@ use super::ZCoin;
 use crate::utxo::rpc_clients::{UtxoRpcClientEnum, UtxoRpcError};
 use crate::utxo::utxo_common::payment_script;
 use crate::utxo::{sat_from_big_decimal, UtxoAddressFormat};
-use crate::z_coin::{SendOutputsErr, ZOutput, DEX_FEE_OVK};
+use crate::z_coin::{ARRRConsensusParams, SendOutputsErr, ZOutput, DEX_FEE_OVK};
 use crate::NumConversError;
 use bigdecimal::BigDecimal;
 use bitcrypto::dhash160;
@@ -117,7 +117,7 @@ pub async fn z_p2sh_spend(
     script_data: Script,
 ) -> Result<UtxoTx, MmError<ZP2SHSpendError>> {
     let current_block = coin.utxo_arc.rpc_client.get_block_count().compat().await? as u32;
-    let mut tx_builder = ZTxBuilder::new(consensus::MAIN_NETWORK, current_block.into());
+    let mut tx_builder = ZTxBuilder::new(ARRRConsensusParams {}, current_block.into());
     tx_builder.set_lock_time(tx_locktime);
 
     let secp_secret =
