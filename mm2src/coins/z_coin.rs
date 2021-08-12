@@ -41,7 +41,7 @@ use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use zcash_client_backend::decrypt_transaction;
 use zcash_client_backend::encoding::{decode_payment_address, encode_extended_spending_key, encode_payment_address};
 use zcash_client_backend::wallet::AccountId;
-use zcash_primitives::consensus::{BlockHeight, H0};
+use zcash_primitives::consensus::{BlockHeight, NetworkUpgrade, H0};
 use zcash_primitives::memo::MemoBytes;
 use zcash_primitives::merkle_tree::{CommitmentTree, Hashable, IncrementalWitness};
 use zcash_primitives::sapling::keys::OutgoingViewingKey;
@@ -65,6 +65,32 @@ mod z_coin_errors;
 use z_coin_errors::*;
 
 #[cfg(test)] mod z_coin_tests;
+
+#[derive(Debug, Clone)]
+pub struct ARRRConsensusParams {}
+
+impl consensus::Parameters for ARRRConsensusParams {
+    fn activation_height(&self, nu: NetworkUpgrade) -> Option<BlockHeight> {
+        match nu {
+            NetworkUpgrade::Sapling => Some(BlockHeight::from_u32(1)),
+            _ => None,
+        }
+    }
+
+    fn coin_type(&self) -> u32 { z_mainnet_constants::COIN_TYPE }
+
+    fn hrp_sapling_extended_spending_key(&self) -> &str { z_mainnet_constants::HRP_SAPLING_EXTENDED_SPENDING_KEY }
+
+    fn hrp_sapling_extended_full_viewing_key(&self) -> &str {
+        z_mainnet_constants::HRP_SAPLING_EXTENDED_FULL_VIEWING_KEY
+    }
+
+    fn hrp_sapling_payment_address(&self) -> &str { z_mainnet_constants::HRP_SAPLING_PAYMENT_ADDRESS }
+
+    fn b58_pubkey_address_prefix(&self) -> [u8; 2] { z_mainnet_constants::B58_PUBKEY_ADDRESS_PREFIX }
+
+    fn b58_script_address_prefix(&self) -> [u8; 2] { z_mainnet_constants::B58_SCRIPT_ADDRESS_PREFIX }
+}
 
 const DEX_FEE_OVK: OutgoingViewingKey = OutgoingViewingKey([7; 32]);
 // TODO change this to one supplied by team, DO NOT USE IN PRODUCTION
@@ -192,7 +218,7 @@ impl ZCoin {
         }
 
         let current_block = self.utxo_arc.rpc_client.get_block_count().compat().await? as u32;
-        let mut tx_builder = ZTxBuilder::new(consensus::MAIN_NETWORK, current_block.into());
+        let mut tx_builder = ZTxBuilder::new(ARRRConsensusParams {}, current_block.into());
 
         let mut ext = HashMap::new();
         ext.insert(AccountId::default(), (&self.z_fields.z_spending_key).into());
@@ -211,11 +237,12 @@ impl ZCoin {
             let z_cash_tx = ZTransaction::read(prev_tx.hex.as_slice())
                 .map_to_mm(|err| GenTxError::TxReadError { err, hex: prev_tx.hex })?;
             let decrypted = decrypt_transaction(
-                &consensus::MAIN_NETWORK,
+                &ARRRConsensusParams {},
                 BlockHeight::from_u32(height as u32),
                 &z_cash_tx,
                 &ext,
             );
+            println!("Decrypted len {}", decrypted.len());
             let decrypted_output = decrypted
                 .iter()
                 .find(|out| out.index as u32 == unspent.out_index)
@@ -464,74 +491,74 @@ async fn sapling_state_cache_loop(coin: ZCoin) {
             }
             (state.height, tree)
         },
-        Err(_) => (150000, CommitmentTree::empty()),
+        Err(_) => (0, CommitmentTree::empty()),
     };
 
-    // let (utxo_weak, z_fields_weak) = coin.into_weak_parts();
+    let (utxo_weak, z_fields_weak) = coin.into_weak_parts();
 
     let zero_root = Some(H256Json::default());
-    // while let Some(coin) = ZCoin::from_weak_parts(&utxo_weak, &z_fields_weak) {
-    coin.z_fields.sapling_state_synced.store(false, AtomicOrdering::Relaxed);
-    let current_block = match coin.rpc_client().get_block_count().compat().await {
-        Ok(b) => b,
-        Err(e) => {
-            log::error!("Error {} on getting block count", e);
-            Timer::sleep(10.).await;
-            panic!();
-        },
-    };
-
-    let native_client = match coin.rpc_client() {
-        UtxoRpcClientEnum::Native(n) => n,
-        _ => unimplemented!("Implemented only for native client"),
-    };
-    while processed_height as u64 <= current_block {
-        let block = match native_client.get_block_by_height(processed_height as u64).await {
+    while let Some(coin) = ZCoin::from_weak_parts(&utxo_weak, &z_fields_weak) {
+        coin.z_fields.sapling_state_synced.store(false, AtomicOrdering::Relaxed);
+        let current_block = match coin.rpc_client().get_block_count().compat().await {
             Ok(b) => b,
             Err(e) => {
-                log::error!("Error {} on getting block", e);
-                Timer::sleep(1.).await;
+                log::error!("Error {} on getting block count", e);
+                Timer::sleep(10.).await;
                 continue;
             },
         };
-        let current_sapling_root = current_tree.root();
-        let mut root_bytes = [0u8; 32];
-        current_sapling_root
-            .write(&mut root_bytes as &mut [u8])
-            .expect("Root len is 32 bytes");
 
-        let current_sapling_root = Some(H256::from(root_bytes).reversed().into());
-        if current_sapling_root != block.final_sapling_root && block.final_sapling_root != zero_root {
-            let prev_tree_state = current_tree.clone();
-            let mut cmus = Vec::new();
-            for hash in block.tx {
-                let tx = native_client
-                    .get_transaction_bytes(hash)
-                    .compat()
-                    .await
-                    .expect("Panic here to avoid storing invalid tree state to the DB");
-                let tx: UtxoTx = deserialize(tx.as_slice()).expect("Panic here to avoid invalid tree state");
-                for output in tx.shielded_outputs {
-                    current_tree
-                        .append(Node::new(output.cmu.take()))
-                        .expect("Commitment tree not full");
-                    cmus.push(output.cmu);
-                }
-            }
-
-            let state_to_insert = SaplingBlockState {
-                height: processed_height + 1,
-                prev_tree_state,
-                cmus,
+        let native_client = match coin.rpc_client() {
+            UtxoRpcClientEnum::Native(n) => n,
+            _ => unimplemented!("Implemented only for native client"),
+        };
+        while processed_height as u64 <= current_block {
+            let block = match native_client.get_block_by_height(processed_height as u64).await {
+                Ok(b) => b,
+                Err(e) => {
+                    log::error!("Error {} on getting block", e);
+                    Timer::sleep(1.).await;
+                    continue;
+                },
             };
-            insert_block_state(&coin.sqlite_conn(), state_to_insert).expect("Insertion should not fail");
+            let current_sapling_root = current_tree.root();
+            let mut root_bytes = [0u8; 32];
+            current_sapling_root
+                .write(&mut root_bytes as &mut [u8])
+                .expect("Root len is 32 bytes");
+
+            let current_sapling_root = Some(H256::from(root_bytes).reversed().into());
+            if current_sapling_root != block.final_sapling_root && block.final_sapling_root != zero_root {
+                let prev_tree_state = current_tree.clone();
+                let mut cmus = Vec::new();
+                for hash in block.tx {
+                    let tx = native_client
+                        .get_transaction_bytes(hash)
+                        .compat()
+                        .await
+                        .expect("Panic here to avoid storing invalid tree state to the DB");
+                    let tx: UtxoTx = deserialize(tx.as_slice()).expect("Panic here to avoid invalid tree state");
+                    for output in tx.shielded_outputs {
+                        current_tree
+                            .append(Node::new(output.cmu.take()))
+                            .expect("Commitment tree not full");
+                        cmus.push(output.cmu);
+                    }
+                }
+
+                let state_to_insert = SaplingBlockState {
+                    height: processed_height + 1,
+                    prev_tree_state,
+                    cmus,
+                };
+                insert_block_state(&coin.sqlite_conn(), state_to_insert).expect("Insertion should not fail");
+            }
+            processed_height += 1;
         }
-        processed_height += 1;
+        coin.z_fields.sapling_state_synced.store(true, AtomicOrdering::Relaxed);
+        drop(coin);
+        Timer::sleep(10.).await;
     }
-    coin.z_fields.sapling_state_synced.store(true, AtomicOrdering::Relaxed);
-    drop(coin);
-    Timer::sleep(10.).await;
-    // }
 }
 
 async fn z_coin_from_conf_and_request_with_z_key(
@@ -544,9 +571,19 @@ async fn z_coin_from_conf_and_request_with_z_key(
     z_spending_key: ExtendedSpendingKey,
 ) -> Result<ZCoin, MmError<ZCoinBuildError>> {
     let builder = UtxoArcBuilder::new(ctx, ticker, conf, req, secp_priv_key);
-    let utxo_arc = builder.build().await.map_to_mm(ZCoinBuildError::BuilderError)?;
+    let utxo_arc = builder.build().await.map_to_mm(ZCoinBuildError::UtxoBuilderError)?;
+    let db_name = format!("{}_CACHE.db", ticker);
 
-    db_dir_path.push(format!("{}_CACHE.db", ticker));
+    db_dir_path.push(&db_name);
+    if !db_dir_path.exists() {
+        let default_cache_path = PathBuf::new().join("./").join(db_name);
+        if !default_cache_path.exists() {
+            return MmError::err(ZCoinBuildError::SaplingCacheDbDoesNotExist {
+                path: std::env::current_dir()?.join(&default_cache_path).display().to_string(),
+            });
+        }
+        std::fs::copy(default_cache_path, &db_dir_path)?;
+    }
 
     let sqlite = Connection::open(db_dir_path)?;
     init_db(&sqlite)?;
@@ -580,7 +617,7 @@ async fn z_coin_from_conf_and_request_with_z_key(
     };
 
     z_coin.z_rpc().z_import_key(&my_z_key_encoded).compat().await?;
-    // spawn(sapling_state_cache_loop(z_coin.clone()));
+    spawn(sapling_state_cache_loop(z_coin.clone()));
     Ok(z_coin)
 }
 
@@ -864,7 +901,7 @@ impl SwapOps for ZCoin {
 
             for shielded_out in z_tx.shielded_outputs.iter() {
                 if let Some((note, address, memo)) =
-                    try_sapling_output_recovery(&consensus::MAIN_NETWORK, block_height, &DEX_FEE_OVK, shielded_out)
+                    try_sapling_output_recovery(&ARRRConsensusParams {}, block_height, &DEX_FEE_OVK, shielded_out)
                 {
                     if address != coin.z_fields.dex_fee_addr {
                         let encoded =

@@ -109,10 +109,15 @@ impl From<SqliteError> for GetUnspentWitnessErr {
 
 #[derive(Debug, Display)]
 pub enum ZCoinBuildError {
-    BuilderError(String),
+    UtxoBuilderError(String),
     GetAddressError,
     SqliteError(SqliteError),
     Rpc(UtxoRpcError),
+    #[display(fmt = "Sapling cache DB does not exist at {}. Please download it.", path)]
+    SaplingCacheDbDoesNotExist {
+        path: String,
+    },
+    Io(std::io::Error),
 }
 
 impl From<SqliteError> for ZCoinBuildError {
@@ -121,4 +126,8 @@ impl From<SqliteError> for ZCoinBuildError {
 
 impl From<UtxoRpcError> for ZCoinBuildError {
     fn from(err: UtxoRpcError) -> ZCoinBuildError { ZCoinBuildError::Rpc(err) }
+}
+
+impl From<std::io::Error> for ZCoinBuildError {
+    fn from(err: std::io::Error) -> ZCoinBuildError { ZCoinBuildError::Io(err) }
 }
