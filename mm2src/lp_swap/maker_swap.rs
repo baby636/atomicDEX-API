@@ -460,7 +460,7 @@ impl MakerSwap {
     }
 
     async fn wait_taker_fee(&self) -> Result<(Option<MakerSwapCommand>, Vec<MakerSwapEvent>), String> {
-        const TAKER_FEE_RECV_TIMEOUT: u64 = 180;
+        const TAKER_FEE_RECV_TIMEOUT: u64 = 600;
         let negotiated = SwapMsg::Negotiated(true);
         let send_abort_handle = broadcast_swap_message_every(
             self.ctx.clone(),
