@@ -27,17 +27,19 @@ use std::collections::VecDeque;
 use std::time::Duration;
 use wasm_timer::Instant;
 
-struct ExpiringElement<Element> {
+#[derive(Debug)]
+pub struct ExpiringElement<Element> {
     /// The element that expires
-    element: Element,
+    pub element: Element,
     /// The expire time.
     expires: Instant,
 }
 
+#[derive(Debug)]
 pub struct TimeCache<Key, Value> {
     /// Mapping a key to its value together with its latest expire time (can be updated through
     /// reinserts).
-    map: FnvHashMap<Key, ExpiringElement<Value>>,
+    pub map: FnvHashMap<Key, ExpiringElement<Value>>,
     /// An ordered list of keys by expires time.
     list: VecDeque<ExpiringElement<Key>>,
     /// The time elements remain in the cache.
@@ -178,6 +180,20 @@ where
         }
     }
 
+    // Todo: refactor this with remove_expired_keys to avoid looping twice
+    pub fn remove(&mut self, key: Key) -> Option<Value> {
+        let now = Instant::now();
+        self.remove_expired_keys(now);
+        if let Some(pos) = self.list.iter().position(|x| x.element == key) {
+            self.list.remove(pos);
+        }
+        if let Occupied(entry) = self.map.entry(key) {
+            Some(entry.remove().element)
+        } else {
+            None
+        }
+    }
+
     /// Empties the entire cache.
     #[allow(dead_code)]
     pub fn clear(&mut self) {
@@ -190,6 +206,8 @@ where
     pub fn get(&self, key: &Key) -> Option<&Value> { self.map.get(key).map(|e| &e.element) }
 
     pub fn len(&self) -> usize { self.map.len() }
+
+    pub fn is_empty(&self) -> bool { self.map.is_empty() }
 
     pub fn ttl(&self) -> Duration { self.ttl }
 }

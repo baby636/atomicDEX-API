@@ -141,7 +141,8 @@ mod behaviour;
 mod config;
 mod handler;
 mod mcache;
-mod time_cache;
+// todo: move time_cache to common
+pub mod time_cache;
 mod topic;
 
 mod rpc_proto {

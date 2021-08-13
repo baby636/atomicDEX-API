@@ -3302,6 +3302,7 @@ dependencies = [
  "async-std",
  "async-trait",
  "atomic 0.4.6",
+ "atomicdex-gossipsub",
  "bigdecimal",
  "bitcoin-cash-slp",
  "bitcrypto",

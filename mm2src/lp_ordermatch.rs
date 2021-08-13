@@ -19,6 +19,7 @@
 //
 
 use async_trait::async_trait;
+use atomicdex_gossipsub::time_cache::{Entry as TimeCacheEntry, TimeCache};
 use best_orders::BestOrdersAction;
 use bigdecimal::BigDecimal;
 use blake2::digest::{Update, VariableOutput};
@@ -53,6 +54,7 @@ use std::fmt;
 use std::fs::DirEntry;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 use trie_db::NodeCodec as NodeCodecT;
 use uuid::Uuid;
 
@@ -85,6 +87,7 @@ const TAKER_ORDER_TIMEOUT: u64 = 30;
 const ORDER_MATCH_TIMEOUT: u64 = 30;
 const ORDERBOOK_REQUESTING_TIMEOUT: u64 = MIN_ORDER_KEEP_ALIVE_INTERVAL * 2;
 const MAX_ORDERS_NUMBER_IN_ORDERBOOK_RESPONSE: usize = 1000;
+const TRIE_STATE_HISTORY_TIMEOUT: u64 = 14400;
 
 /// Alphabetically ordered orderbook pair
 type AlbOrderedOrderbookPair = String;
@@ -336,7 +339,7 @@ fn remove_and_purge_pubkey_pair_orders(orderbook: &mut Orderbook, pubkey: &str, 
         Some(root) => root,
         None => return,
     };
-    pubkey_state.order_pairs_trie_state_history.remove(alb_pair);
+    pubkey_state.order_pairs_trie_state_history.remove(alb_pair.into());
 
     let mut orders_to_remove = Vec::with_capacity(pubkey_state.orders_uuids.len());
     pubkey_state.orders_uuids.retain(|(uuid, alb)| {
@@ -1942,31 +1945,40 @@ struct TrieDiff<Key, Value> {
     next_root: H64,
 }
 
-#[derive(Debug, Eq, PartialEq)]
-struct TrieDiffHistory<Key, Value> {
-    inner: HashMap<H64, TrieDiff<Key, Value>>,
+#[derive(Debug)]
+struct TrieDiffHistory<Key, Value>
+where
+    Key: Eq + std::hash::Hash + PartialEq,
+{
+    inner: TimeCache<H64, TrieDiff<Key, Value>>,
 }
 
-impl<Key, Value> Default for TrieDiffHistory<Key, Value> {
+impl<Key, Value> Default for TrieDiffHistory<Key, Value>
+where
+    Key: Eq + std::hash::Hash + PartialEq,
+{
     fn default() -> Self {
         TrieDiffHistory {
-            inner: Default::default(),
+            inner: TimeCache::new(Duration::new(TRIE_STATE_HISTORY_TIMEOUT, 0)),
         }
     }
 }
 
-impl<Key, Value> TrieDiffHistory<Key, Value> {
+impl<Key, Value> TrieDiffHistory<Key, Value>
+where
+    Key: Eq + std::hash::Hash + PartialEq,
+{
     fn insert_new_diff(&mut self, insert_at: H64, diff: TrieDiff<Key, Value>) {
         if insert_at == diff.next_root {
             // do nothing to avoid cycles in diff history
             return;
         }
 
-        match self.inner.remove(&diff.next_root) {
+        match self.inner.remove(diff.next_root) {
             Some(mut diff) => {
                 // we reached a state that was already reached previously
                 // history can be cleaned up to this state hash
-                while let Some(next_diff) = self.inner.remove(&diff.next_root) {
+                while let Some(next_diff) = self.inner.remove(diff.next_root) {
                     diff = next_diff;
                 }
             },
@@ -1977,27 +1989,37 @@ impl<Key, Value> TrieDiffHistory<Key, Value> {
     }
 
     #[allow(dead_code)]
-    fn remove_key(&mut self, key: &H64) { self.inner.remove(key); }
+    fn remove_key(&mut self, key: H64) { self.inner.remove(key); }
 
     #[allow(dead_code)]
-    fn contains_key(&self, key: &H64) -> bool { self.inner.contains_key(key) }
+    fn contains_key(&mut self, key: &H64) -> bool { self.inner.contains_key(key) }
 
     fn get(&self, key: &H64) -> Option<&TrieDiff<Key, Value>> { self.inner.get(key) }
 }
 
 type TrieOrderHistory = TrieDiffHistory<Uuid, OrderbookItem>;
 
-#[derive(Default)]
 struct OrderbookPubkeyState {
     /// Timestamp of the latest keep alive message received
     last_keep_alive: u64,
     /// The map storing historical data about specific pair subtrie changes
     /// Used to get diffs of orders of pair between specific root hashes
-    order_pairs_trie_state_history: HashMap<AlbOrderedOrderbookPair, TrieOrderHistory>,
+    order_pairs_trie_state_history: TimeCache<AlbOrderedOrderbookPair, TrieOrderHistory>,
     /// The known UUIDs owned by pubkey with alphabetically ordered pair to ease the lookup during pubkey orderbook requests
     orders_uuids: HashSet<(Uuid, AlbOrderedOrderbookPair)>,
     /// The map storing alphabetically ordered pair with trie root hash of orders owned by pubkey.
     trie_roots: HashMap<AlbOrderedOrderbookPair, H64>,
+}
+
+impl OrderbookPubkeyState {
+    pub fn with_history_timeout(ttl: Duration) -> OrderbookPubkeyState {
+        OrderbookPubkeyState {
+            last_keep_alive: now_ms() / 1000,
+            order_pairs_trie_state_history: TimeCache::new(ttl),
+            orders_uuids: HashSet::default(),
+            trie_roots: HashMap::default(),
+        }
+    }
 }
 
 fn get_trie_mut<'a>(
@@ -2018,10 +2040,7 @@ fn pubkey_state_mut<'a>(
     match state.raw_entry_mut().from_key(from_pubkey) {
         RawEntryMut::Occupied(e) => e.into_mut(),
         RawEntryMut::Vacant(e) => {
-            let state = OrderbookPubkeyState {
-                last_keep_alive: now_ms() / 1000,
-                ..OrderbookPubkeyState::default()
-            };
+            let state = OrderbookPubkeyState::with_history_timeout(Duration::new(TRIE_STATE_HISTORY_TIMEOUT, 0));
             e.insert(from_pubkey.to_string(), state).1
         },
     }
@@ -2035,12 +2054,13 @@ fn order_pair_root_mut<'a>(state: &'a mut HashMap<AlbOrderedOrderbookPair, H64>,
 }
 
 fn pair_history_mut<'a>(
-    state: &'a mut HashMap<AlbOrderedOrderbookPair, TrieOrderHistory>,
+    state: &'a mut TimeCache<AlbOrderedOrderbookPair, TrieOrderHistory>,
     pair: &str,
 ) -> &'a mut TrieOrderHistory {
-    match state.raw_entry_mut().from_key(pair) {
-        RawEntryMut::Occupied(e) => e.into_mut(),
-        RawEntryMut::Vacant(e) => e.insert(pair.to_owned(), Default::default()).1,
+    // Todo: replace with or_insert_with
+    match state.entry(pair.into()) {
+        TimeCacheEntry::Occupied(e) => e.into_mut(),
+        TimeCacheEntry::Vacant(e) => e.insert(Default::default()),
     }
 }
 
@@ -2065,10 +2085,10 @@ fn collect_orderbook_metrics(_ctx: &MmArc, _orderbook: &Orderbook) {}
 fn collect_orderbook_metrics(ctx: &MmArc, orderbook: &Orderbook) {
     use parity_util_mem::malloc_size;
 
-    fn history_committed_changes(history: &HashMap<AlbOrderedOrderbookPair, TrieOrderHistory>) -> i64 {
-        let total = history
-            .iter()
-            .fold(0usize, |total, (_alb_pair, history)| total + history.inner.len());
+    fn history_committed_changes(history: &TimeCache<AlbOrderedOrderbookPair, TrieOrderHistory>) -> i64 {
+        let total = history.map.iter().fold(0usize, |total, (_alb_pair, history)| {
+            total + history.element.inner.len()
+        });
         total as i64
     }
 
@@ -2134,24 +2154,25 @@ impl Orderbook {
 
         pubkey_state.orders_uuids.insert((order.uuid, alb_ordered.clone()));
 
-        let mut pair_trie = match get_trie_mut(&mut self.memory_db, pair_root) {
-            Ok(trie) => trie,
-            Err(e) => {
-                log::error!("Error getting {} trie with root {:?}", e, prev_root);
+        {
+            let mut pair_trie = match get_trie_mut(&mut self.memory_db, pair_root) {
+                Ok(trie) => trie,
+                Err(e) => {
+                    log::error!("Error getting {} trie with root {:?}", e, prev_root);
+                    return;
+                },
+            };
+            let order_bytes = rmp_serde::to_vec(&order).expect("Serialization should never fail");
+            if let Err(e) = pair_trie.insert(order.uuid.as_bytes(), &order_bytes) {
+                log::error!(
+                    "Error {} on insertion to trie. Key {}, value {:?}",
+                    e,
+                    order.uuid,
+                    order_bytes
+                );
                 return;
-            },
-        };
-        let order_bytes = rmp_serde::to_vec(&order).expect("Serialization should never fail");
-        if let Err(e) = pair_trie.insert(order.uuid.as_bytes(), &order_bytes) {
-            log::error!(
-                "Error {} on insertion to trie. Key {}, value {:?}",
-                e,
-                order.uuid,
-                order_bytes
-            );
-            return;
-        };
-        drop(pair_trie);
+            };
+        }
 
         if prev_root != H64::default() {
             let history = pair_history_mut(&mut pubkey_state.order_pairs_trie_state_history, &alb_ordered);
