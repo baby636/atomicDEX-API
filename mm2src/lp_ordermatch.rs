@@ -2103,7 +2103,7 @@ impl Orderbook {
             let order_bytes = rmp_serde::to_vec(&order).expect("Serialization should never fail");
             if let Err(e) = pair_trie.insert(order.uuid.as_bytes(), &order_bytes) {
                 log::error!(
-                    "Error {} on insertion to trie. Key {}, value {:?}",
+                    "Error {:?} on insertion to trie. Key {}, value {:?}",
                     e,
                     order.uuid,
                     order_bytes
