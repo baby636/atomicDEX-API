@@ -180,18 +180,26 @@ where
         }
     }
 
-    // Todo: refactor this with remove_expired_keys to avoid looping twice
+    // Removes a certain key even if it didn't expire plus removing other expired keys
     pub fn remove(&mut self, key: Key) -> Option<Value> {
         let now = Instant::now();
-        self.remove_expired_keys(now);
-        if let Some(pos) = self.list.iter().position(|x| x.element == key) {
-            self.list.remove(pos);
+        let mut value = None;
+        while let Some(element) = self.list.pop_front() {
+            if element.expires > now && element.element != key {
+                self.list.push_front(element);
+                break;
+            }
+            if let Occupied(entry) = self.map.entry(element.element.clone()) {
+                if element.element == key {
+                    value = Some(entry.remove().element);
+                    break;
+                }
+                if entry.get().expires <= now {
+                    entry.remove();
+                }
+            }
         }
-        if let Occupied(entry) = self.map.entry(key) {
-            Some(entry.remove().element)
-        } else {
-            None
-        }
+        value
     }
 
     /// Empties the entire cache.

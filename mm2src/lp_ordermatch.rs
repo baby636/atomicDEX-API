@@ -19,7 +19,7 @@
 //
 
 use async_trait::async_trait;
-use atomicdex_gossipsub::time_cache::{Entry as TimeCacheEntry, TimeCache};
+use atomicdex_gossipsub::time_cache::TimeCache;
 use best_orders::BestOrdersAction;
 use bigdecimal::BigDecimal;
 use blake2::digest::{Update, VariableOutput};
@@ -2008,11 +2008,7 @@ fn pair_history_mut<'a>(
     state: &'a mut TimeCache<AlbOrderedOrderbookPair, TrieOrderHistory>,
     pair: &str,
 ) -> &'a mut TrieOrderHistory {
-    // Todo: replace with or_insert_with
-    match state.entry(pair.into()) {
-        TimeCacheEntry::Occupied(e) => e.into_mut(),
-        TimeCacheEntry::Vacant(e) => e.insert(Default::default()),
-    }
+    state.entry(pair.into()).or_insert_with(TrieOrderHistory::default)
 }
 
 /// `parity_util_mem::malloc_size` crushes for some reason on wasm32
