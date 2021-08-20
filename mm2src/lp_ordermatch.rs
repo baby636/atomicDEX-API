@@ -42,11 +42,9 @@ use mm2_libp2p::{decode_signed, encode_and_sign, encode_message, pub_sub_topic, 
 #[cfg(test)] use mocktopus::macros::*;
 use num_rational::BigRational;
 use num_traits::identities::Zero;
-use order_requests_tracker::OrderRequestsTracker;
 use rpc::v1::types::H256 as H256Json;
 use serde_json::{self as json, Value as Json};
-use sp_trie::{delta_trie_root, DBValue, HashDBT, MemoryDB, Trie, TrieConfiguration, TrieDB, TrieDBMut, TrieHash,
-              TrieMut};
+use sp_trie::{delta_trie_root, MemoryDB, Trie, TrieConfiguration, TrieDB, TrieDBMut, TrieHash, TrieMut};
 use std::collections::hash_map::{Entry, HashMap, RawEntryMut};
 use std::collections::{BTreeSet, HashSet};
 use std::convert::TryInto;
@@ -106,12 +104,11 @@ impl From<(new_protocol::MakerOrderCreated, String)> for OrderbookItem {
             min_volume: order.min_volume,
             uuid: order.uuid.into(),
             created_at: order.created_at,
-            base_protocol_info: order.base_protocol_info,
-            rel_protocol_info: order.rel_protocol_info,
         }
     }
 }
 
+#[allow(dead_code)]
 pub fn addr_format_from_protocol_info(protocol_info: &Option<Vec<u8>>) -> AddressFormat {
     match protocol_info {
         Some(info) => match rmp_serde::from_read_ref::<_, AddressFormat>(info) {
@@ -256,7 +253,6 @@ async fn request_and_fill_orderbook(ctx: &MmArc, base: &str, rel: &str) -> Resul
     let request = OrdermatchRequest::GetOrderbook {
         base: base.to_string(),
         rel: rel.to_string(),
-        version: OrdermatchRequestVersion::V2,
     };
 
     let response = try_s!(request_any_relay::<GetOrderbookRes>(ctx.clone(), P2PRequest::Ordermatch(request)).await);
@@ -265,7 +261,7 @@ async fn request_and_fill_orderbook(ctx: &MmArc, base: &str, rel: &str) -> Resul
         None => return Ok(()),
     };
 
-    let ordermatch_ctx = OrdermatchContext::from_ctx(&ctx).unwrap();
+    let ordermatch_ctx = OrdermatchContext::from_ctx(ctx).unwrap();
     let mut orderbook = ordermatch_ctx.orderbook.lock().await;
 
     let alb_pair = alb_ordered_pair(base, rel);
@@ -295,13 +291,13 @@ async fn request_and_fill_orderbook(ctx: &MmArc, base: &str, rel: &str) -> Resul
 /// Insert or update an order `req`.
 /// Note this function locks the [`OrdermatchContext::orderbook`] async mutex.
 async fn insert_or_update_order(ctx: &MmArc, item: OrderbookItem) {
-    let ordermatch_ctx = OrdermatchContext::from_ctx(&ctx).expect("from_ctx failed");
+    let ordermatch_ctx = OrdermatchContext::from_ctx(ctx).expect("from_ctx failed");
     let mut orderbook = ordermatch_ctx.orderbook.lock().await;
     orderbook.insert_or_update_order_update_trie(item)
 }
 
 async fn delete_order(ctx: &MmArc, pubkey: &str, uuid: Uuid) {
-    let ordermatch_ctx = OrdermatchContext::from_ctx(&ctx).expect("from_ctx failed");
+    let ordermatch_ctx = OrdermatchContext::from_ctx(ctx).expect("from_ctx failed");
 
     let mut inactive = ordermatch_ctx.inactive_orders.lock().await;
     match inactive.get(&uuid) {
@@ -325,7 +321,7 @@ async fn delete_order(ctx: &MmArc, pubkey: &str, uuid: Uuid) {
 }
 
 async fn delete_my_order(ctx: &MmArc, uuid: Uuid) {
-    let ordermatch_ctx: Arc<OrdermatchContext> = OrdermatchContext::from_ctx(&ctx).expect("from_ctx failed");
+    let ordermatch_ctx: Arc<OrdermatchContext> = OrdermatchContext::from_ctx(ctx).expect("from_ctx failed");
     let mut orderbook = ordermatch_ctx.orderbook.lock().await;
     orderbook.remove_order_trie_update(uuid);
 }
@@ -415,23 +411,11 @@ pub async fn process_msg(ctx: MmArc, _topics: Vec<String>, from_peer: String, ms
 }
 
 #[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub enum OrdermatchRequestVersion {
-    V1,
-    V2,
-}
-
-impl Default for OrdermatchRequestVersion {
-    fn default() -> Self { OrdermatchRequestVersion::V1 }
-}
-
-#[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum OrdermatchRequest {
     /// Get an orderbook for the given pair.
     GetOrderbook {
         base: String,
         rel: String,
-        #[serde(default)]
-        version: OrdermatchRequestVersion,
     },
     /// Sync specific pubkey orderbook state if our known Patricia trie state doesn't match the latest keep alive message
     SyncPubkeyOrderbookState {
@@ -443,8 +427,6 @@ pub enum OrdermatchRequest {
         coin: String,
         action: BestOrdersAction,
         volume: BigRational,
-        #[serde(default)]
-        version: OrdermatchRequestVersion,
     },
     OrderbookDepth {
         pairs: Vec<(String, String)>,
@@ -491,19 +473,14 @@ impl TryFromBytes for Uuid {
 pub async fn process_peer_request(ctx: MmArc, request: OrdermatchRequest) -> Result<Option<Vec<u8>>, String> {
     log::debug!("Got ordermatch request {:?}", request);
     match request {
-        OrdermatchRequest::GetOrderbook { base, rel, version } => {
-            process_get_orderbook_request(ctx, base, rel, version).await
-        },
+        OrdermatchRequest::GetOrderbook { base, rel } => process_get_orderbook_request(ctx, base, rel).await,
         OrdermatchRequest::SyncPubkeyOrderbookState { pubkey, trie_roots } => {
             let response = process_sync_pubkey_orderbook_state(ctx, pubkey, trie_roots).await;
             response.map(|res| res.map(|r| encode_message(&r).expect("Serialization failed")))
         },
-        OrdermatchRequest::BestOrders {
-            coin,
-            action,
-            volume,
-            version,
-        } => best_orders::process_best_orders_p2p_request(ctx, coin, action, volume, version).await,
+        OrdermatchRequest::BestOrders { coin, action, volume } => {
+            best_orders::process_best_orders_p2p_request(ctx, coin, action, volume).await
+        },
         OrdermatchRequest::OrderbookDepth { pairs } => {
             orderbook_depth::process_orderbook_depth_p2p_request(ctx, pairs).await
         },
@@ -528,12 +505,7 @@ struct GetOrderbookRes {
     pubkey_orders: HashMap<String, GetOrderbookPubkeyItem>,
 }
 
-async fn process_get_orderbook_request(
-    ctx: MmArc,
-    base: String,
-    rel: String,
-    version: OrdermatchRequestVersion,
-) -> Result<Option<Vec<u8>>, String> {
+async fn process_get_orderbook_request(ctx: MmArc, base: String, rel: String) -> Result<Option<Vec<u8>>, String> {
     fn get_pubkeys_orders(orderbook: &Orderbook, base: String, rel: String) -> (usize, HashMap<String, PubkeyOrders>) {
         let asks = orderbook.unordered.get(&(base.clone(), rel.clone()));
         let bids = orderbook.unordered.get(&(rel, base));
@@ -574,23 +546,9 @@ async fn process_get_orderbook_request(
                 pubkey
             ))?;
 
-            let filtered_orders: Vec<(Uuid, OrderbookItem)> = orders
-                .into_iter()
-                .filter_map(|(uuid, order)| {
-                    if version == OrdermatchRequestVersion::V1
-                        && (order.base_protocol_info.is_some() || order.base_protocol_info.is_some())
-                    {
-                        log::debug!("Order {} address format is not supported by receiver", order.uuid);
-                        None
-                    } else {
-                        Some((uuid, order))
-                    }
-                })
-                .collect::<Vec<_>>();
-
             let item = GetOrderbookPubkeyItem {
                 last_keep_alive: pubkey_state.last_keep_alive,
-                orders: filtered_orders,
+                orders,
                 // TODO save last signed payload to pubkey state
                 last_signed_pubkey_payload: vec![],
             };
@@ -778,12 +736,7 @@ fn test_parse_orderbook_pair_from_topic() {
     assert_eq!(None, parse_orderbook_pair_from_topic("orbk/BTC:"));
 }
 
-async fn maker_order_created_p2p_notify(
-    ctx: MmArc,
-    order: &MakerOrder,
-    base_protocol_info: Option<Vec<u8>>,
-    rel_protocol_info: Option<Vec<u8>>,
-) {
+async fn maker_order_created_p2p_notify(ctx: MmArc, order: &MakerOrder) {
     let topic = orderbook_topic_from_base_rel(&order.base, &order.rel);
     let message = new_protocol::MakerOrderCreated {
         uuid: order.uuid.into(),
@@ -796,8 +749,6 @@ async fn maker_order_created_p2p_notify(
         created_at: now_ms() / 1000,
         timestamp: now_ms() / 1000,
         pair_trie_root: H64::default(),
-        base_protocol_info,
-        rel_protocol_info,
     };
 
     let key_pair = ctx.secp256k1_key_pair.or(&&|| panic!());
@@ -809,7 +760,7 @@ async fn maker_order_created_p2p_notify(
 }
 
 async fn process_my_maker_order_updated(ctx: &MmArc, message: &new_protocol::MakerOrderUpdated) {
-    let ordermatch_ctx = OrdermatchContext::from_ctx(&ctx).expect("from_ctx failed");
+    let ordermatch_ctx = OrdermatchContext::from_ctx(ctx).expect("from_ctx failed");
     let mut orderbook = ordermatch_ctx.orderbook.lock().await;
 
     let uuid = message.uuid();
@@ -2029,7 +1980,7 @@ fn get_trie_mut<'a>(
     if *root == H64::default() {
         Ok(TrieDBMut::new(mem_db, root))
     } else {
-        TrieDBMut::from_existing(mem_db, root).map_err(|e| ERRL!("{}", e))
+        TrieDBMut::from_existing(mem_db, root).map_err(|e| ERRL!("{:?}", e))
     }
 }
 
@@ -2062,19 +2013,6 @@ fn pair_history_mut<'a>(
         TimeCacheEntry::Occupied(e) => e.into_mut(),
         TimeCacheEntry::Vacant(e) => e.insert(Default::default()),
     }
-}
-
-#[allow(dead_code)]
-fn populate_trie<'db, T: TrieConfiguration>(
-    db: &'db mut dyn HashDBT<T::Hash, DBValue>,
-    root: &'db mut TrieHash<T>,
-    v: &[(Vec<u8>, Vec<u8>)],
-) -> Result<TrieDBMut<'db, T>, String> {
-    let mut t = TrieDBMut::<T>::new(db, root);
-    for (key, val) in v {
-        try_s!(t.insert(key, val));
-    }
-    Ok(t)
 }
 
 /// `parity_util_mem::malloc_size` crushes for some reason on wasm32
@@ -2372,7 +2310,6 @@ struct OrdermatchContext {
     pub my_taker_orders: AsyncMutex<HashMap<Uuid, TakerOrder>>,
     pub my_cancelled_orders: AsyncMutex<HashMap<Uuid, MakerOrder>>,
     pub orderbook: AsyncMutex<Orderbook>,
-    pub order_requests_tracker: AsyncMutex<OrderRequestsTracker>,
     pub inactive_orders: AsyncMutex<HashMap<Uuid, OrderbookItem>>,
 }
 
@@ -2595,17 +2532,7 @@ pub async fn lp_ordermatch_loop(ctx: MmArc) {
                             spawn({
                                 let ctx = ctx.clone();
                                 async move {
-                                    if let Ok(Some((base, rel))) =
-                                        find_pair(&ctx, &maker_order.base, &maker_order.rel).await
-                                    {
-                                        maker_order_created_p2p_notify(
-                                            ctx,
-                                            &maker_order,
-                                            base.coin_protocol_info(),
-                                            rel.coin_protocol_info(),
-                                        )
-                                        .await;
-                                    }
+                                    maker_order_created_p2p_notify(ctx, &maker_order).await;
                                 }
                             });
                         } else {
@@ -2698,13 +2625,7 @@ pub async fn lp_ordermatch_loop(ctx: MmArc) {
                                 log::error!("Error {} on subscribing to orderbook topic {}", e, topic);
                             }
                         }
-                        maker_order_created_p2p_notify(
-                            ctx.clone(),
-                            order,
-                            base.coin_protocol_info(),
-                            rel.coin_protocol_info(),
-                        )
-                        .await;
+                        maker_order_created_p2p_notify(ctx.clone(), order).await;
                     }
                 }
             }
@@ -2761,7 +2682,7 @@ async fn process_maker_reserved(ctx: MmArc, from_pubkey: H256Json, reserved_msg:
         my_order
             .matches
             .insert(taker_match.reserved.maker_order_uuid, taker_match);
-        save_my_taker_order(&ctx, &my_order);
+        save_my_taker_order(&ctx, my_order);
     }
 }
 
@@ -2796,7 +2717,7 @@ async fn process_maker_connected(ctx: MmArc, from_pubkey: H256Json, connected: M
     // alice
     lp_connected_alice(ctx.clone(), my_order_entry.get().request.clone(), order_match.clone());
     // remove the matched order immediately
-    delete_my_taker_order(&ctx, &my_order_entry.get(), TakerOrderCancellationReason::Fulfilled);
+    delete_my_taker_order(&ctx, my_order_entry.get(), TakerOrderCancellationReason::Fulfilled);
     my_order_entry.remove();
 }
 
@@ -2860,7 +2781,7 @@ async fn process_taker_request(ctx: MmArc, from_pubkey: H256Json, taker_request:
                     last_updated: now_ms(),
                 };
                 order.matches.insert(maker_match.request.uuid, maker_match);
-                save_my_maker_order(&ctx, &order);
+                save_my_maker_order(&ctx, order);
             }
             return;
         }
@@ -2916,7 +2837,7 @@ async fn process_taker_connect(ctx: MmArc, sender_pubkey: H256Json, connect_msg:
             updated_msg.with_new_max_volume(my_order.available_amount().into());
             maker_order_updated_p2p_notify(ctx.clone(), &my_order.base, &my_order.rel, updated_msg).await;
         }
-        save_my_maker_order(&ctx, &my_order);
+        save_my_maker_order(&ctx, my_order);
     }
 }
 
@@ -3094,8 +3015,8 @@ pub async fn lp_auto_buy(
         _ => return ERR!("Auto buy must be called only from buy/sell RPC methods"),
     };
     let request_orderbook = false;
-    try_s!(subscribe_to_orderbook_topic(&ctx, &input.base, &input.rel, request_orderbook).await);
-    let ordermatch_ctx = try_s!(OrdermatchContext::from_ctx(&ctx));
+    try_s!(subscribe_to_orderbook_topic(ctx, &input.base, &input.rel, request_orderbook).await);
+    let ordermatch_ctx = try_s!(OrdermatchContext::from_ctx(ctx));
     let mut my_taker_orders = ordermatch_ctx.my_taker_orders.lock().await;
     let our_public_id = try_s!(ctx.public_id());
     let rel_volume = &input.volume * &input.price;
@@ -3120,7 +3041,7 @@ pub async fn lp_auto_buy(
     }
     let order = try_s!(order_builder.build());
     broadcast_ordermatch_message(
-        &ctx,
+        ctx,
         vec![orderbook_topic_from_base_rel(&input.base, &input.rel)],
         order.request.clone().into(),
     );
@@ -3145,12 +3066,6 @@ struct OrderbookItem {
     min_volume: BigRational,
     uuid: Uuid,
     created_at: u64,
-    #[serde(default)]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub base_protocol_info: Option<Vec<u8>>,
-    #[serde(default)]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub rel_protocol_info: Option<Vec<u8>>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -3518,7 +3433,7 @@ impl<'a> From<&'a MakerOrder> for MakerOrderForRpc<'a> {
 /// https://github.com/KomodoPlatform/atomicDEX-API/issues/794
 async fn cancel_orders_on_error<T, E>(ctx: &MmArc, req: &SetPriceReq, error: E) -> Result<T, E> {
     if req.cancel_previous {
-        let ordermatch_ctx = OrdermatchContext::from_ctx(&ctx).unwrap();
+        let ordermatch_ctx = OrdermatchContext::from_ctx(ctx).unwrap();
         let mut my_orders = ordermatch_ctx.my_maker_orders.lock().await;
 
         let mut cancelled = vec![];
@@ -3531,7 +3446,7 @@ async fn cancel_orders_on_error<T, E>(ctx: &MmArc, req: &SetPriceReq, error: E) 
             .filter_map(|(uuid, order)| {
                 let to_delete = order.base == req.base && order.rel == req.rel;
                 if to_delete {
-                    delete_my_maker_order(&ctx, &order, MakerOrderCancellationReason::Cancelled);
+                    delete_my_maker_order(ctx, &order, MakerOrderCancellationReason::Cancelled);
                     cancelled.push(order);
                     None
                 } else {
@@ -3555,11 +3470,11 @@ async fn get_max_volume(ctx: &MmArc, my_coin: &MmCoinEnum, other_coin: &MmCoinEn
             .compat()
             .await
     );
-    try_s!(check_other_coin_balance_for_swap(&ctx, &other_coin, None, other_coin_trade_fee).await);
+    try_s!(check_other_coin_balance_for_swap(ctx, other_coin, None, other_coin_trade_fee).await);
     // calculate max maker volume
     // note the `calc_max_maker_vol` returns [`CheckBalanceError::NotSufficientBalance`] error if the balance of `base_coin` is not sufficient
     Ok(try_s!(
-        calc_max_maker_vol(&ctx, &my_coin, &my_balance, FeeApproxStage::OrderIssue).await
+        calc_max_maker_vol(ctx, my_coin, &my_balance, FeeApproxStage::OrderIssue).await
     ))
 }
 
@@ -3651,13 +3566,7 @@ pub async fn set_price(ctx: MmArc, req: Json) -> Result<Response<Vec<u8>>, Strin
     let request_orderbook = false;
     try_s!(subscribe_to_orderbook_topic(&ctx, &new_order.base, &new_order.rel, request_orderbook).await);
     save_my_new_maker_order(&ctx, &new_order);
-    maker_order_created_p2p_notify(
-        ctx.clone(),
-        &new_order,
-        base_coin.coin_protocol_info(),
-        rel_coin.coin_protocol_info(),
-    )
-    .await;
+    maker_order_created_p2p_notify(ctx.clone(), &new_order).await;
     let rpc_result = MakerOrderForRpc::from(&new_order);
     let res = try_s!(json::to_vec(&json!({ "result": rpc_result })));
     my_orders.insert(new_order.uuid, new_order);
@@ -3793,10 +3702,10 @@ pub async fn update_maker_order(ctx: MmArc, req: Json) -> Result<Response<Vec<u8
                 return ERR!("Order {} is being matched now, can't update", req.uuid);
             }
 
-            let new_change = HistoricalOrder::build(&update_msg, &order);
+            let new_change = HistoricalOrder::build(&update_msg, order);
             order.apply_updated(&update_msg);
             order.changes_history.get_or_insert(Vec::new()).push(new_change);
-            save_maker_order_on_update(&ctx, &order);
+            save_maker_order_on_update(&ctx, order);
             update_msg.with_new_max_volume((new_volume - reserved_amount).into());
             (MakerOrderForRpc::from(&*order), order.base.as_str(), order.rel.as_str())
         },
@@ -3829,7 +3738,7 @@ struct OrderForRpcWithCancellationReason<'a> {
 }
 
 #[cfg(target_arch = "wasm32")]
-pub async fn order_status(ctx: MmArc, req: Json) -> Result<Response<Vec<u8>>, String> {
+pub async fn order_status(_ctx: MmArc, _req: Json) -> Result<Response<Vec<u8>>, String> {
     let res = json!({
         "error": format!("'order_status' is only supported in native mode"),
     });
@@ -4287,7 +4196,7 @@ fn save_my_new_maker_order(ctx: &MmArc, order: &MakerOrder) {
     save_my_maker_order(ctx, order);
 
     if order.save_in_history {
-        if let Err(e) = insert_maker_order_to_db(&ctx, order.uuid, &order) {
+        if let Err(e) = insert_maker_order_to_db(ctx, order.uuid, order) {
             error!("Error {} on new order insertion", e);
         }
     }
@@ -4297,7 +4206,7 @@ fn save_maker_order_on_update(ctx: &MmArc, order: &MakerOrder) {
     save_my_maker_order(ctx, order);
 
     if order.save_in_history {
-        if let Err(e) = update_maker_order_in_db(&ctx, order.uuid, &order) {
+        if let Err(e) = update_maker_order_in_db(ctx, order.uuid, order) {
             error!("Error {} on order update", e);
         }
     }
@@ -4313,7 +4222,7 @@ fn save_my_new_taker_order(ctx: &MmArc, order: &TakerOrder) {
     save_my_taker_order(ctx, order);
 
     if order.save_in_history {
-        if let Err(e) = insert_taker_order_to_db(&ctx, order.request.uuid, &order) {
+        if let Err(e) = insert_taker_order_to_db(ctx, order.request.uuid, order) {
             error!("Error {} on new order insertion", e);
         }
     }
@@ -4373,7 +4282,7 @@ pub async fn orders_kick_start(ctx: &MmArc) -> Result<HashSet<String>, String> {
     let mut coins = HashSet::new();
     let ordermatch_ctx = try_s!(OrdermatchContext::from_ctx(ctx));
     let mut maker_orders = ordermatch_ctx.my_maker_orders.lock().await;
-    let maker_entries = try_s!(json_dir_entries(&my_maker_orders_dir(&ctx)));
+    let maker_entries = try_s!(json_dir_entries(&my_maker_orders_dir(ctx)));
 
     maker_entries.iter().for_each(|entry| {
         if let Ok(order) = json::from_slice::<MakerOrder>(&slurp(&entry.path())) {
@@ -4384,7 +4293,7 @@ pub async fn orders_kick_start(ctx: &MmArc) -> Result<HashSet<String>, String> {
     });
 
     let mut taker_orders = ordermatch_ctx.my_taker_orders.lock().await;
-    let taker_entries: Vec<DirEntry> = try_s!(json_dir_entries(&my_taker_orders_dir(&ctx)));
+    let taker_entries: Vec<DirEntry> = try_s!(json_dir_entries(&my_taker_orders_dir(ctx)));
 
     taker_entries.iter().for_each(|entry| {
         if let Ok(order) = json::from_slice::<TakerOrder>(&slurp(&entry.path())) {
@@ -4536,7 +4445,7 @@ pub(self) async fn subscribe_to_orderbook_topic(
                 e.insert(OrderbookRequestingState::NotRequested {
                     subscribed_at: current_timestamp,
                 });
-                subscribe_to_topic(&ctx, topic.clone()).await;
+                subscribe_to_topic(ctx, topic.clone()).await;
                 // orderbook is not filled
                 false
             },
@@ -4562,7 +4471,7 @@ pub(self) async fn subscribe_to_orderbook_topic(
     };
 
     if !is_orderbook_filled && request_orderbook {
-        try_s!(request_and_fill_orderbook(&ctx, base, rel).await);
+        try_s!(request_and_fill_orderbook(ctx, base, rel).await);
     }
 
     Ok(())

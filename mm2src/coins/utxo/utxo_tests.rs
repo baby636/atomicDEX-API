@@ -971,7 +971,7 @@ fn test_electrum_rpc_client_error() {
 
     // use the static string instead because the actual error message cannot be obtain
     // by serde_json serialization
-    let expected = r#"JsonRpcError { client_info: "coin: RICK", request: JsonRpcRequest { jsonrpc: "2.0", id: "0", method: "blockchain.transaction.get", params: [String("0000000000000000000000000000000000000000000000000000000000000000"), Bool(true)] }, error: Response(electrum1.cipig.net:10060, Object({"code": Number(2), "message": String("daemon error: DaemonError({\'code\': -5, \'message\': \'No such mempool or blockchain transaction. Use gettransaction for wallet transactions.\'})")})) }"#;
+    let expected = r#"JsonRpcError { client_info: "coin: RICK", request: JsonRpcRequest { jsonrpc: "2.0", id: "0", method: "blockchain.transaction.get", params: [String("0000000000000000000000000000000000000000000000000000000000000000"), Bool(true)] }, error: Response(electrum1.cipig.net:10060, Object({"code": Number(2), "message": String("daemon error: DaemonError({'code': -5, 'message': 'No such mempool or blockchain transaction. Use gettransaction for wallet transactions.'})")})) }"#;
     let actual = format!("{}", err);
 
     assert_eq!(expected, actual);
@@ -1096,6 +1096,52 @@ fn test_generate_transaction_relay_fee_is_used_when_dynamic_fee_is_lower() {
     );
     let generated = block_on(fut).unwrap();
     assert_eq!(generated.0.outputs.len(), 1);
+
+    // generated transaction fee must be equal to relay fee if calculated dynamic fee is lower than relay
+    assert_eq!(generated.1.fee_amount, 100000000);
+    assert_eq!(generated.1.unused_change, None);
+    assert_eq!(generated.1.received_by_me, 0);
+    assert_eq!(generated.1.spent_by_me, 1000000000);
+    assert!(unsafe { GET_RELAY_FEE_CALLED });
+}
+
+#[test]
+#[cfg(not(target_arch = "wasm32"))]
+// https://github.com/KomodoPlatform/atomicDEX-API/issues/1037
+fn test_generate_transaction_relay_fee_is_used_when_dynamic_fee_is_lower_and_deduct_from_output() {
+    let client = NativeClientImpl::default();
+
+    static mut GET_RELAY_FEE_CALLED: bool = false;
+    NativeClient::get_relay_fee.mock_safe(|_| {
+        unsafe { GET_RELAY_FEE_CALLED = true };
+        MockResult::Return(Box::new(futures01::future::ok("1.0".parse().unwrap())))
+    });
+    let client = UtxoRpcClientEnum::Native(NativeClient(Arc::new(client)));
+    let mut coin = utxo_coin_fields_for_test(client, None, false);
+    coin.conf.force_min_relay_fee = true;
+    let coin = utxo_coin_from_fields(coin);
+    let unspents = vec![UnspentInfo {
+        value: 1000000000,
+        outpoint: OutPoint::default(),
+        height: Default::default(),
+    }];
+
+    let outputs = vec![TransactionOutput {
+        script_pubkey: vec![].into(),
+        value: 1000000000,
+    }];
+
+    let fut = coin.generate_transaction(
+        unspents,
+        outputs,
+        FeePolicy::DeductFromOutput(0),
+        Some(ActualTxFee::Dynamic(100)),
+        None,
+    );
+    let generated = block_on(fut).unwrap();
+    assert_eq!(generated.0.outputs.len(), 1);
+    // `output (= 10.0) - fee_amount (= 1.0)`
+    assert_eq!(generated.0.outputs[0].value, 900000000);
 
     // generated transaction fee must be equal to relay fee if calculated dynamic fee is lower than relay
     assert_eq!(generated.1.fee_amount, 100000000);
