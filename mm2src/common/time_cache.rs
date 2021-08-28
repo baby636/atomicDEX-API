@@ -27,7 +27,6 @@ use std::collections::VecDeque;
 use std::time::Duration;
 use wasm_timer::Instant;
 
-#[derive(Debug)]
 pub struct ExpiringElement<Element> {
     /// The element that expires
     pub element: Element,
@@ -35,7 +34,6 @@ pub struct ExpiringElement<Element> {
     expires: Instant,
 }
 
-#[derive(Debug)]
 pub struct TimeCache<Key, Value> {
     /// Mapping a key to its value together with its latest expire time (can be updated through
     /// reinserts).

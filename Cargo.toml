@@ -47,7 +47,6 @@ debug = false
 [dependencies]
 async-std = { version = "1.5", features = ["unstable"] }
 async-trait = "0.1"
-atomicdex-gossipsub = { path = "mm2src/gossipsub" }
 bigdecimal = { version = "0.1", features = ["serde"] }
 bitcrypto = { path = "mm2src/mm2_bitcoin/crypto" }
 blake2 = "0.9.1"
