@@ -2411,7 +2411,7 @@ fn check_if_orderbook_contains_only(orderbook: &Orderbook, pubkey: &str, orders:
     assert_eq!(orderbook.unordered, expected_unordered);
 
     // history
-    let actual_keys: HashSet<_> = pubkey_state.order_pairs_trie_state_history.keys().cloned().collect();
+    let actual_keys: HashSet<_> = pubkey_state.order_pairs_trie_state_history.map.keys().cloned().collect();
     let expected_keys: HashSet<_> = orders
         .iter()
         .map(|order| alb_ordered_pair(&order.base, &order.rel))
@@ -2473,6 +2473,6 @@ fn test_remove_and_purge_pubkey_pair_orders() {
     let ordermatch_ctx = OrdermatchContext::from_ctx(&ctx).unwrap();
     let mut orderbook = block_on(ordermatch_ctx.orderbook.lock());
 
-    remove_and_purge_pubkey_pair_orders(&mut orderbook, &pubkey, &rick_morty_pair);
+    remove_pubkey_pair_orders(&mut orderbook, &pubkey, &rick_morty_pair);
     check_if_orderbook_contains_only(&orderbook, &pubkey, &rick_kmd_orders);
 }
