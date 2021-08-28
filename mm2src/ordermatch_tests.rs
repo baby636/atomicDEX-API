@@ -2411,7 +2411,12 @@ fn check_if_orderbook_contains_only(orderbook: &Orderbook, pubkey: &str, orders:
     assert_eq!(orderbook.unordered, expected_unordered);
 
     // history
-    let actual_keys: HashSet<_> = pubkey_state.order_pairs_trie_state_history.map.keys().cloned().collect();
+    let actual_keys: HashSet<_> = pubkey_state
+        .order_pairs_trie_state_history
+        .map
+        .keys()
+        .cloned()
+        .collect();
     let expected_keys: HashSet<_> = orders
         .iter()
         .map(|order| alb_ordered_pair(&order.base, &order.rel))
