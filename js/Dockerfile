@@ -5,7 +5,7 @@
 
 # -- Begins with parts copied from the MM Dockerfile in order to share those filesystem layers --
 
-FROM ubuntu:xenial
+FROM ubuntu:xenial-20201014
 
 RUN \
     apt-get update &&\
